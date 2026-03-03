@@ -18,3 +18,4 @@ data/*.pdf
 !data/sample_multi.md
 !data/sample_multi.png
 !data/sample_multi.xlsx
+reports/
