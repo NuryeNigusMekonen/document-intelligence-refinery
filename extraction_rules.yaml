@@ -1,0 +1,20 @@
+triage:
+  low_char_count_threshold: 80
+  low_density_threshold: 0.00008
+  high_image_ratio_threshold: 0.45
+  mixed_threshold: 0.20
+  table_heavy_threshold: 0.25
+extraction:
+  fast_confidence_floor: 0.60
+  layout_confidence_floor: 0.72
+  escalate_to_vision_floor: 0.50
+chunking:
+  max_tokens: 350
+  list_split_item_boundary_only: true
+facts:
+  financial_keys:
+    - Revenue
+    - Net profit
+    - Total assets
+    - Operating income
+    - EPS
