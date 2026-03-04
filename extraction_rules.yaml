@@ -5,9 +5,18 @@ triage:
   mixed_threshold: 0.20
   table_heavy_threshold: 0.25
 extraction:
+  # Phase 0 empirical fast-path gates:
+  # - meaningful character stream per page
+  # - image area not dominant on page
+  fast_min_chars_per_page: 100
+  fast_max_image_area_ratio: 0.50
   fast_confidence_floor: 0.60
   layout_confidence_floor: 0.72
   escalate_to_vision_floor: 0.50
+  # Heuristic handwriting trigger for direct vision escalation
+  handwriting_whitespace_threshold: 0.92
+  handwriting_char_density_threshold: 0.00005
+  handwriting_image_ratio_threshold: 0.55
 chunking:
   max_tokens: 350
   list_split_item_boundary_only: true

@@ -27,40 +27,56 @@ class TriageMetrics:
     estimated_columns: int
     table_signal_ratio: float
     text_sample: str
+    form_field_count: int = 0
+    multi_column_fraction: float = 0.0
 
 
 def classify_profile(doc_name: str, sha256: str, metrics: TriageMetrics, language_hint: LanguageHint | None = None) -> DocumentProfile:
-    if metrics.image_area_ratio > 0.75 and metrics.avg_char_density < 0.00008:
+    if metrics.form_field_count > 0:
+        origin_type = "form_fillable"
+    elif metrics.image_area_ratio > 0.75 and metrics.avg_char_density < 0.00008:
         origin_type = "scanned_image"
     elif metrics.image_area_ratio > 0.20 and metrics.avg_char_density < 0.0002:
         origin_type = "mixed"
     else:
         origin_type = "native_digital"
 
-    if metrics.table_signal_ratio > 0.25:
+    table_heavy = metrics.table_signal_ratio > 0.25
+    figure_heavy = metrics.image_area_ratio > 0.50
+    multi_column = metrics.estimated_columns >= 2 or metrics.multi_column_fraction > 0.45
+
+    signal_count = sum(1 for flag in (table_heavy, figure_heavy, multi_column) if flag)
+
+    if signal_count >= 2:
+        layout_complexity = "mixed"
+    elif table_heavy:
         layout_complexity = "table_heavy"
-    elif metrics.estimated_columns >= 2:
+    elif multi_column:
         layout_complexity = "multi_column"
-    elif metrics.image_area_ratio > 0.50:
+    elif figure_heavy:
         layout_complexity = "figure_heavy"
     else:
         layout_complexity = "single_column"
 
     if metrics.avg_char_density < 0.0001 and metrics.image_area_ratio > 0.60:
         estimated_extraction_cost = "needs_vision_model"
-    elif layout_complexity in {"multi_column", "table_heavy", "figure_heavy"} or metrics.low_char_pages_fraction > 0.3:
+    elif (
+        layout_complexity in {"multi_column", "table_heavy", "figure_heavy", "mixed"}
+        or metrics.low_char_pages_fraction > 0.3
+        or metrics.form_field_count > 0
+    ):
         estimated_extraction_cost = "needs_layout_model"
     else:
         estimated_extraction_cost = "fast_text_sufficient"
 
-    lower = doc_name.lower()
-    if any(k in lower for k in ["balance", "income", "financial", "earnings", "assets"]):
+    lower = f"{doc_name} {metrics.text_sample[:5000]}".lower()
+    if any(k in lower for k in ["balance", "income", "financial", "earnings", "assets", "revenue", "expense"]):
         domain_hint = "financial"
-    elif any(k in lower for k in ["contract", "agreement", "terms", "legal"]):
+    elif any(k in lower for k in ["contract", "agreement", "terms", "legal", "whereas", "party", "liability"]):
         domain_hint = "legal"
-    elif any(k in lower for k in ["manual", "spec", "api", "technical"]):
+    elif any(k in lower for k in ["manual", "spec", "api", "technical", "architecture", "endpoint", "algorithm"]):
         domain_hint = "technical"
-    elif any(k in lower for k in ["clinical", "patient", "medical"]):
+    elif any(k in lower for k in ["clinical", "patient", "medical", "diagnosis", "treatment", "prescription"]):
         domain_hint = "medical"
     else:
         domain_hint = "general"
@@ -95,6 +111,7 @@ class TriageAgent:
         low_char_pages = 0
         col_votes: list[int] = []
         table_hits = 0
+        form_field_count = 0
         page_count = 0
         text_parts: list[str] = []
 
@@ -127,6 +144,8 @@ class TriageAgent:
                     table_hits += 1
 
                 mu_page = mu_pdf[idx]
+                widgets = mu_page.widgets()
+                form_field_count += sum(1 for _ in widgets) if widgets is not None else 0
                 for img in mu_page.get_images(full=True):
                     xref = img[0]
                     rects = mu_page.get_image_rects(xref)
@@ -135,8 +154,10 @@ class TriageAgent:
         avg_char_density = total_chars / max(total_page_area, 1.0)
         image_area_ratio = total_image_area / max(total_page_area, 1.0)
         whitespace_ratio = max(0.0, min(1.0, 1.0 - (avg_char_density / 0.0015)))
-        estimated_columns = 2 if sum(1 for c in col_votes if c == 2) > (len(col_votes) / 2) else 1
+        multi_column_votes = sum(1 for c in col_votes if c == 2)
+        estimated_columns = 2 if multi_column_votes > (len(col_votes) / 2) else 1
         table_signal_ratio = table_hits / max(page_count, 1)
+        multi_column_fraction = multi_column_votes / max(page_count, 1)
 
         return TriageMetrics(
             page_count=page_count,
@@ -147,6 +168,8 @@ class TriageAgent:
             estimated_columns=estimated_columns,
             table_signal_ratio=table_signal_ratio,
             text_sample="\n".join(text_parts)[:8000],
+            form_field_count=form_field_count,
+            multi_column_fraction=multi_column_fraction,
         )
 
     def run(self, pdf_path: Path) -> DocumentProfile:

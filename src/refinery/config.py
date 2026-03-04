@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     artifacts_dir: Path = Field(default=Path(".refinery"))
     max_cost_per_doc: float = Field(default=2.5)
     enable_vision: bool = Field(default=False)
+    use_openrouter_vlm: bool = Field(default=False)
     openrouter_api_key: str | None = Field(default=None)
+    vlm_provider: str = Field(default="openrouter")
+    vlm_model_low_cost: str = Field(default="openai/gpt-4o-mini")
+    vlm_model_high_quality: str = Field(default="google/gemini-2.0-flash-001")
     vector_top_k: int = Field(default=5)
     chunk_max_tokens: int = Field(default=350)
     deterministic_seed: int = Field(default=7)
@@ -24,6 +28,11 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="multilingual-lexical")
     multilingual_embeddings: bool = Field(default=True)
     language_detection_mode: Literal["script", "langdetect"] = Field(default="script")
+    use_ollama_summaries: bool = Field(default=True)
+    ollama_model: str = Field(default="llama3.2:3b")
+    ollama_host: str = Field(default="http://127.0.0.1:11434")
+    query_use_langgraph: bool = Field(default=True)
+    query_semantic_top_k: int = Field(default=5)
 
     @property
     def resolved_artifacts_dir(self) -> Path:
