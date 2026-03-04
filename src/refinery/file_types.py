@@ -5,6 +5,7 @@ from pathlib import Path
 from .lang_detect import detect_language
 from .file_router import FileRouter
 from .models import DocumentProfile, LanguageHint
+from .runtime_rules import load_runtime_rules
 from .utils import deterministic_id, sha256_file
 
 
@@ -16,23 +17,18 @@ def build_non_pdf_profile(path: Path, router: FileRouter) -> DocumentProfile:
     ftype = router.detect_type(path)
     sha = sha256_file(path)
     doc_id = deterministic_id("doc", {"name": path.name, "sha256": sha})
+    rules = load_runtime_rules(router.settings)
+    configured_profiles = rules.get("file_type_profiles", {}) if isinstance(rules.get("file_type_profiles", {}), dict) else {}
+    profile_cfg = configured_profiles.get(ftype) or configured_profiles.get("default") or {}
 
-    if ftype == "image":
-        origin = "scanned_image"
-        layout = "figure_heavy"
-        cost = "needs_vision_model"
-    elif ftype == "excel":
-        origin = "native_digital"
-        layout = "table_heavy"
-        cost = "needs_layout_model"
-    elif ftype in {"docx", "markdown"}:
-        origin = "native_digital"
-        layout = "mixed"
-        cost = "fast_text_sufficient"
-    else:
-        origin = "mixed"
-        layout = "mixed"
-        cost = "needs_layout_model"
+    origin = str(profile_cfg.get("origin_type", "mixed"))
+    layout = str(profile_cfg.get("layout_complexity", "mixed"))
+    cost = str(profile_cfg.get("estimated_extraction_cost", "needs_layout_model"))
+    origin_confidence = float(profile_cfg.get("origin_confidence", 0.72))
+    layout_confidence = float(profile_cfg.get("layout_confidence", 0.70))
+    extraction_cost_confidence = float(profile_cfg.get("extraction_cost_confidence", 0.70))
+    domain_hint = str(profile_cfg.get("domain_hint", "general"))
+    domain_confidence = float(profile_cfg.get("domain_confidence", 0.55))
 
     sample_text = ""
     if ftype == "markdown":
@@ -53,8 +49,12 @@ def build_non_pdf_profile(path: Path, router: FileRouter) -> DocumentProfile:
         origin_type=origin,
         layout_complexity=layout,
         language_hint=LanguageHint(language=lang_result["language"], confidence=float(lang_result["confidence"])),
-        domain_hint="general",
+        domain_hint=domain_hint,
         estimated_extraction_cost=cost,
+        origin_confidence=origin_confidence,
+        layout_confidence=layout_confidence,
+        domain_confidence=domain_confidence,
+        extraction_cost_confidence=extraction_cost_confidence,
         page_count=1,
         avg_char_density=0.0,
         image_area_ratio=0.0,

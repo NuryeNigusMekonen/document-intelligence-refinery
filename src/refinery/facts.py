@@ -4,35 +4,83 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
+from typing import Pattern
 
 import yaml
 
 from .models import LogicalDocumentUnit
+from .runtime_rules import DEFAULT_RUNTIME_RULES, load_runtime_rules
 
 logger = logging.getLogger(__name__)
 
-FACT_PATTERNS = [
-    re.compile(r"\b(Revenue|Net profit|Total assets|Operating income|EPS)\b[^\n]{0,60}?([\$€£]?\d[\d,]*(?:\.\d+)?%?)", re.IGNORECASE),
-    re.compile(r"\b(FY\s?\d{2,4}|\d{4})\b"),
-]
-
-
-def _load_amharic_keywords() -> dict[str, list[str]]:
-    resource = Path(__file__).parent / "resources" / "amharic_keywords.yaml"
+def _load_amharic_keywords(path: Path) -> dict[str, list[str]]:
+    resource = path
     if not resource.exists():
         return {}
     data = yaml.safe_load(resource.read_text(encoding="utf-8")) or {}
     return data.get("keywords", {})
 
 
-AMHARIC_KEYWORDS = _load_amharic_keywords()
 NUM_RE = re.compile(r"([\$€£]?\d[\d,]*(?:\.\d+)?%?)")
 
 
 class FactStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._fact_patterns = self._build_fact_patterns()
+        self._amharic_keywords = self._load_amharic_keywords_from_rules()
         self._init_db()
+
+    def _build_fact_patterns(self) -> list[Pattern[str]]:
+        settings = None
+        try:
+            from .config import Settings
+
+            settings = Settings(workspace_root=Path.cwd())
+            rules = load_runtime_rules(settings)
+        except Exception:
+            rules = DEFAULT_RUNTIME_RULES
+
+        facts_cfg = rules.get("facts", {}) if isinstance(rules.get("facts", {}), dict) else {}
+        financial_keys = facts_cfg.get("financial_keys", DEFAULT_RUNTIME_RULES["facts"]["financial_keys"])
+        if not isinstance(financial_keys, list):
+            financial_keys = DEFAULT_RUNTIME_RULES["facts"]["financial_keys"]
+        escaped_keys = [re.escape(str(k)) for k in financial_keys if str(k).strip()]
+        key_pattern = "|".join(escaped_keys) if escaped_keys else "Revenue|Net profit|Total assets|Operating income|EPS"
+        context_window = int(facts_cfg.get("context_window_chars", 60))
+        patterns: list[Pattern[str]] = [
+            re.compile(
+                rf"\\b({key_pattern})\\b[^\\n]{{0,{max(context_window, 0)}}}?([\\$€£]?\\d[\\d,]*(?:\\.\\d+)?%?)",
+                re.IGNORECASE,
+            )
+        ]
+
+        include_year_pattern = bool(facts_cfg.get("include_year_pattern", True))
+        if include_year_pattern:
+            year_regex = str(facts_cfg.get("year_regex", DEFAULT_RUNTIME_RULES["facts"]["year_regex"]))
+            try:
+                patterns.append(re.compile(year_regex))
+            except re.error:
+                patterns.append(re.compile(DEFAULT_RUNTIME_RULES["facts"]["year_regex"]))
+        return patterns
+
+    def _load_amharic_keywords_from_rules(self) -> dict[str, list[str]]:
+        try:
+            from .config import Settings
+
+            settings = Settings(workspace_root=Path.cwd())
+            rules = load_runtime_rules(settings)
+        except Exception:
+            rules = DEFAULT_RUNTIME_RULES
+            settings = None
+
+        facts_cfg = rules.get("facts", {}) if isinstance(rules.get("facts", {}), dict) else {}
+        rel_path = str(facts_cfg.get("amharic_keywords_file", DEFAULT_RUNTIME_RULES["facts"]["amharic_keywords_file"]))
+        candidate = Path(rel_path)
+        if not candidate.is_absolute():
+            root = settings.workspace_root if settings is not None else Path.cwd()
+            candidate = (root / candidate).resolve()
+        return _load_amharic_keywords(candidate)
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
@@ -79,7 +127,7 @@ class FactStore:
             text = ldu.content or ""
             if not text.strip():
                 continue
-            for pattern in FACT_PATTERNS:
+            for pattern in self._fact_patterns:
                 for match in pattern.finditer(text):
                     if match.lastindex and match.lastindex >= 2:
                         key = match.group(1)
@@ -107,7 +155,7 @@ class FactStore:
                         )
                     )
 
-            for key, am_terms in AMHARIC_KEYWORDS.items():
+            for key, am_terms in self._amharic_keywords.items():
                 if not any(term in text for term in am_terms):
                     continue
                 number_match = NUM_RE.search(text)

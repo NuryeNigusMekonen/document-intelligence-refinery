@@ -8,55 +8,63 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from statistics import median
+from typing import Callable
 from urllib import request
 
 import fitz
 import pdfplumber
-import yaml
 from PIL import Image
 
 from .adapters import DoclingAdapter
 from .config import Settings
 from .lang_detect import detect_language, select_ocr_lang
-from .models import DocumentProfile, ExtractedDocument, ExtractedPage, FigureObject, LedgerEntry, ProvenanceRef, TableObject, TextBlock
+from .models import (
+    ConfidenceSignal,
+    DocumentProfile,
+    ExtractedDocument,
+    ExtractedPage,
+    FigureObject,
+    LedgerEntry,
+    PageStrategyHistory,
+    ProvenanceRef,
+    RoutingAttempt,
+    RoutingPolicyContext,
+    TableObject,
+    TextBlock,
+)
+from .runtime_rules import load_runtime_rules
 from .storage import ArtifactStore
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_EXTRACTION_RULES: dict[str, dict[str, float]] = {
-    "extraction": {
-        "fast_min_chars_per_page": 100.0,
-        "fast_max_image_area_ratio": 0.50,
-        "fast_confidence_floor": 0.60,
-        "layout_confidence_floor": 0.72,
-        "escalate_to_vision_floor": 0.50,
-        "handwriting_whitespace_threshold": 0.92,
-        "handwriting_char_density_threshold": 0.00005,
-        "handwriting_image_ratio_threshold": 0.55,
-    }
-}
+ExtractionResult = tuple[ExtractedDocument, float, float, str]
+LayoutEngineResult = tuple[ExtractedDocument, float, float, str, str]
+VLMProviderFn = Callable[[Path, DocumentProfile], ExtractionResult | None]
+LayoutEngineFn = Callable[[Path, DocumentProfile], LayoutEngineResult]
 
 
-def _load_rules(settings: Settings) -> dict[str, dict[str, float]]:
-    rules_path = settings.workspace_root / "extraction_rules.yaml"
-    if not rules_path.exists():
-        return DEFAULT_EXTRACTION_RULES
-    try:
-        loaded = yaml.safe_load(rules_path.read_text(encoding="utf-8")) or {}
-        if not isinstance(loaded, dict):
-            return DEFAULT_EXTRACTION_RULES
-        out: dict[str, dict[str, float]] = {"extraction": dict(DEFAULT_EXTRACTION_RULES["extraction"])}
-        ext = loaded.get("extraction", {})
-        if isinstance(ext, dict):
-            for key, value in ext.items():
-                try:
-                    out["extraction"][str(key)] = float(value)
-                except (TypeError, ValueError):
-                    continue
-        return out
-    except Exception:
-        return DEFAULT_EXTRACTION_RULES
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _signal(
+    signal: str,
+    value: float,
+    *,
+    normalized: float | None = None,
+    weight: float | None = None,
+    threshold: float | None = None,
+    passed: bool | None = None,
+) -> ConfidenceSignal:
+    return ConfidenceSignal(
+        signal=signal,
+        value=float(value),
+        normalized_value=None if normalized is None else _clamp01(normalized),
+        weight=weight,
+        threshold=threshold,
+        passed=passed,
+    )
 
 
 class BaseExtractor(ABC):
@@ -121,17 +129,37 @@ class FastTextExtractor(BaseExtractor):
                     text = (w.get("text") or "").strip()
                     if not text:
                         continue
+                    word_bbox = _as_bbox(w, (0.0, 0.0, page.width, page.height))
                     blocks.append(
                         TextBlock(
                             text=text,
-                            bbox=_as_bbox(w, (0.0, 0.0, page.width, page.height)),
+                            bbox=word_bbox,
                             reading_order=i,
                             confidence=0.85,
+                            confidence_signals=[
+                                _signal("extractor_prior", 0.85, normalized=0.85, weight=0.50),
+                                _signal(
+                                    "page_char_density_gate",
+                                    float(char_count),
+                                    normalized=min(float(char_count) / max(self.min_chars_per_page, 1.0), 1.0),
+                                    weight=0.30,
+                                    threshold=self.min_chars_per_page,
+                                    passed=char_count > self.min_chars_per_page,
+                                ),
+                                _signal(
+                                    "page_image_ratio_gate",
+                                    float(image_ratio),
+                                    normalized=1.0 - min(float(image_ratio) / max(self.max_image_area_ratio, 1e-6), 1.0),
+                                    weight=0.20,
+                                    threshold=self.max_image_area_ratio,
+                                    passed=image_ratio < self.max_image_area_ratio,
+                                ),
+                            ],
                             provenance=ProvenanceRef(
                                 doc_name=profile.doc_name,
                                 ref_type="pdf_bbox",
                                 page_number=pidx,
-                                bbox=_as_bbox(w, (0.0, 0.0, page.width, page.height)),
+                                bbox=word_bbox,
                                 content_hash="pending",
                             ),
                         )
@@ -151,6 +179,23 @@ class FastTextExtractor(BaseExtractor):
                             rows=rows,
                             reading_order=10000 + t_idx,
                             confidence=0.60,
+                            confidence_signals=[
+                                _signal("extractor_prior", 0.60, normalized=0.60, weight=0.60),
+                                _signal(
+                                    "table_row_count",
+                                    float(len(rows)),
+                                    normalized=min(float(len(rows)) / 6.0, 1.0),
+                                    weight=0.25,
+                                ),
+                                _signal(
+                                    "header_presence",
+                                    float(1.0 if headers else 0.0),
+                                    normalized=1.0 if headers else 0.0,
+                                    weight=0.15,
+                                    threshold=1.0,
+                                    passed=bool(headers),
+                                ),
+                            ],
                             provenance=ProvenanceRef(
                                 doc_name=profile.doc_name,
                                 ref_type="pdf_bbox",
@@ -203,6 +248,15 @@ class LayoutLiteExtractor(BaseExtractor):
                         bbox=(float(b[0]), float(b[1]), float(b[2]), float(b[3])),
                         reading_order=i,
                         confidence=0.80,
+                        confidence_signals=[
+                            _signal("layout_block_prior", 0.80, normalized=0.80, weight=0.70),
+                            _signal(
+                                "block_text_length",
+                                float(len((b[4] or "").strip())),
+                                normalized=min(float(len((b[4] or "").strip())) / 40.0, 1.0),
+                                weight=0.30,
+                            ),
+                        ],
                         provenance=ProvenanceRef(
                             doc_name=profile.doc_name,
                             ref_type="pdf_bbox",
@@ -235,6 +289,23 @@ class LayoutLiteExtractor(BaseExtractor):
                             rows=rows,
                             reading_order=9000 + t_idx,
                             confidence=0.82,
+                            confidence_signals=[
+                                _signal("layout_table_prior", 0.82, normalized=0.82, weight=0.60),
+                                _signal(
+                                    "table_row_count",
+                                    float(len(rows)),
+                                    normalized=min(float(len(rows)) / 10.0, 1.0),
+                                    weight=0.25,
+                                ),
+                                _signal(
+                                    "header_presence",
+                                    float(1.0 if headers else 0.0),
+                                    normalized=1.0 if headers else 0.0,
+                                    weight=0.15,
+                                    threshold=1.0,
+                                    passed=bool(headers),
+                                ),
+                            ],
                             provenance=ProvenanceRef(
                                 doc_name=profile.doc_name,
                                 ref_type="pdf_bbox",
@@ -271,6 +342,17 @@ class LayoutLiteExtractor(BaseExtractor):
                             caption=caption,
                             reading_order=9500 + f_idx,
                             confidence=0.76,
+                            confidence_signals=[
+                                _signal("layout_figure_prior", 0.76, normalized=0.76, weight=0.65),
+                                _signal(
+                                    "caption_presence",
+                                    float(1.0 if caption else 0.0),
+                                    normalized=1.0 if caption else 0.0,
+                                    weight=0.35,
+                                    threshold=1.0,
+                                    passed=bool(caption),
+                                ),
+                            ],
                             provenance=ProvenanceRef(
                                 doc_name=profile.doc_name,
                                 ref_type="pdf_bbox",
@@ -306,9 +388,30 @@ class VisionExtractor(BaseExtractor):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.docling_adapter = DoclingAdapter()
+        self.vlm_providers: dict[str, VLMProviderFn] = {}
+        self.register_vlm_provider("openrouter", self._run_openrouter_vlm)
+
+    def register_vlm_provider(self, name: str, provider: VLMProviderFn) -> None:
+        key = str(name or "").strip().lower()
+        if not key:
+            return
+        self.vlm_providers[key] = provider
+
+    def _run_vlm_provider(self, provider_name: str, pdf_path: Path, profile: DocumentProfile) -> ExtractionResult | None:
+        normalized = (provider_name or "").strip().lower()
+        if normalized == "openrouter":
+            provider = self._run_openrouter_vlm
+        else:
+            provider = self.vlm_providers.get(normalized)
+        if provider is None:
+            return None
+        try:
+            return provider(pdf_path, profile)
+        except Exception:
+            return None
 
     def _select_openrouter_model(self) -> str:
-        if self.settings.max_cost_per_doc <= 1.0:
+        if self.settings.max_cost_per_doc <= self.settings.vlm_low_budget_cap_usd:
             return self.settings.vlm_model_low_cost
         return self.settings.vlm_model_high_quality
 
@@ -377,7 +480,7 @@ class VisionExtractor(BaseExtractor):
             },
             method="POST",
         )
-        with request.urlopen(req, timeout=60) as resp:
+        with request.urlopen(req, timeout=self.settings.vlm_request_timeout_seconds) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
         data = json.loads(raw)
         choices = data.get("choices", [])
@@ -400,15 +503,17 @@ class VisionExtractor(BaseExtractor):
         return self._extract_json_payload(content_text)
 
     def _run_openrouter_vlm(self, pdf_path: Path, profile: DocumentProfile) -> tuple[ExtractedDocument, float, float, str] | None:
-        if self.settings.vlm_provider.lower() != "openrouter":
-            return None
         if not (self.settings.use_openrouter_vlm and self.settings.openrouter_api_key):
             return None
 
         model = self._select_openrouter_model()
         pages: list[ExtractedPage] = []
         page_scores: list[float] = []
-        cost_per_page = 0.08 if model == "openai/gpt-4o-mini" else 0.12
+        cost_per_page = (
+            self.settings.vlm_low_cost_page_cost_estimate
+            if model == self.settings.vlm_model_low_cost
+            else self.settings.vlm_high_quality_page_cost_estimate
+        )
 
         try:
             with fitz.open(pdf_path) as doc:
@@ -452,6 +557,10 @@ class VisionExtractor(BaseExtractor):
                                     bbox=bbox,
                                     reading_order=int(b.get("reading_order", i)),
                                     confidence=max(0.05, min(1.0, conf)),
+                                    confidence_signals=[
+                                        _signal("vlm_element_confidence", conf, normalized=conf, weight=0.80),
+                                        _signal("vlm_provider", 1.0, normalized=1.0, weight=0.20, passed=True),
+                                    ],
                                     provenance=ProvenanceRef(
                                         doc_name=profile.doc_name,
                                         ref_type="pdf_bbox",
@@ -481,6 +590,22 @@ class VisionExtractor(BaseExtractor):
                                     rows=[[str(c) for c in row] for row in (t.get("rows", []) or [])],
                                     reading_order=int(t.get("reading_order", 9000 + i)),
                                     confidence=max(0.05, min(1.0, float(t.get("confidence", 0.72)))),
+                                    confidence_signals=[
+                                        _signal(
+                                            "vlm_element_confidence",
+                                            float(t.get("confidence", 0.72)),
+                                            normalized=float(t.get("confidence", 0.72)),
+                                            weight=0.70,
+                                        ),
+                                        _signal(
+                                            "header_presence",
+                                            float(1.0 if (t.get("headers", []) or []) else 0.0),
+                                            normalized=1.0 if (t.get("headers", []) or []) else 0.0,
+                                            weight=0.30,
+                                            threshold=1.0,
+                                            passed=bool((t.get("headers", []) or [])),
+                                        ),
+                                    ],
                                     provenance=ProvenanceRef(
                                         doc_name=profile.doc_name,
                                         ref_type="pdf_bbox",
@@ -510,6 +635,22 @@ class VisionExtractor(BaseExtractor):
                                     caption=str(cap) if cap is not None else None,
                                     reading_order=int(f.get("reading_order", 9500 + i)),
                                     confidence=max(0.05, min(1.0, float(f.get("confidence", 0.72)))),
+                                    confidence_signals=[
+                                        _signal(
+                                            "vlm_element_confidence",
+                                            float(f.get("confidence", 0.72)),
+                                            normalized=float(f.get("confidence", 0.72)),
+                                            weight=0.70,
+                                        ),
+                                        _signal(
+                                            "caption_presence",
+                                            float(1.0 if cap else 0.0),
+                                            normalized=1.0 if cap else 0.0,
+                                            weight=0.30,
+                                            threshold=1.0,
+                                            passed=bool(cap),
+                                        ),
+                                    ],
                                     provenance=ProvenanceRef(
                                         doc_name=profile.doc_name,
                                         ref_type="pdf_bbox",
@@ -803,6 +944,17 @@ class VisionExtractor(BaseExtractor):
             rows=data_rows,
             reading_order=9000,
             confidence=max(0.05, min(1.0, mean_conf / 100.0)),
+            confidence_signals=[
+                _signal("ocr_mean_word_conf", mean_conf, normalized=mean_conf / 100.0, weight=0.70),
+                _signal(
+                    "table_grid_stability",
+                    float(stable_rows / max(len(col_count_per_row), 1)),
+                    normalized=float(stable_rows / max(len(col_count_per_row), 1)),
+                    weight=0.30,
+                    threshold=0.35,
+                    passed=(stable_rows / max(len(col_count_per_row), 1)) >= 0.35,
+                ),
+            ],
             provenance=ProvenanceRef(
                 doc_name=doc_name,
                 ref_type="pdf_bbox",
@@ -893,6 +1045,10 @@ class VisionExtractor(BaseExtractor):
                                 bbox=(bx0, by0, bx1, by1),
                                 reading_order=i,
                                 confidence=max(0.05, min(1.0, c / 100.0)),
+                                confidence_signals=[
+                                    _signal("ocr_word_conf", c, normalized=c / 100.0, weight=0.80),
+                                    _signal("ocr_word_present", 1.0, normalized=1.0, weight=0.20, passed=True),
+                                ],
                                 provenance=ProvenanceRef(
                                     doc_name=profile.doc_name,
                                     ref_type="pdf_bbox",
@@ -946,6 +1102,9 @@ class VisionExtractor(BaseExtractor):
                         bbox=(0.0, 0.0, float(page.width), float(page.height)),
                         reading_order=0,
                         confidence=0.35,
+                        confidence_signals=[
+                            _signal("fallback_unresolved", 1.0, normalized=1.0, weight=1.0, passed=False),
+                        ],
                         provenance=ProvenanceRef(
                             doc_name=profile.doc_name,
                             ref_type="pdf_bbox",
@@ -993,7 +1152,8 @@ class VisionExtractor(BaseExtractor):
         openrouter_allowed = self.settings.use_openrouter_vlm and bool(self.settings.openrouter_api_key)
         has_unresolved = any(p.unresolved_needs_vision for p in local_result[0].pages)
         if openrouter_allowed and (has_unresolved or local_result[1] < 0.55):
-            vlm_result = self._run_openrouter_vlm(pdf_path, profile)
+            provider_name = (self.settings.vlm_provider or "openrouter").strip().lower()
+            vlm_result = self._run_vlm_provider(provider_name, pdf_path, profile)
             if vlm_result is not None:
                 return vlm_result
 
@@ -1004,7 +1164,7 @@ class ExtractionRouter:
     def __init__(self, settings: Settings, store: ArtifactStore):
         self.settings = settings
         self.store = store
-        self.rules = _load_rules(settings)
+        self.rules = load_runtime_rules(settings)
         self.fast_confidence_floor = self._rule("fast_confidence_floor", 0.60)
         self.layout_confidence_floor = self._rule("layout_confidence_floor", 0.72)
         self.escalate_to_vision_floor = self._rule("escalate_to_vision_floor", 0.50)
@@ -1018,6 +1178,10 @@ class ExtractionRouter:
         )
         self.layout = LayoutLiteExtractor()
         self.vision = VisionExtractor(settings)
+        self.layout_engines: dict[str, LayoutEngineFn] = {}
+        self.register_layout_engine("default", self._run_layout_strategy_default)
+        self.register_layout_engine("docling", self._run_layout_strategy_default)
+        self.register_layout_engine("layout_lite", self._run_layout_lite_only)
 
     def _rule(self, key: str, default: float) -> float:
         ext = self.rules.get("extraction", {})
@@ -1027,7 +1191,23 @@ class ExtractionRouter:
         except (TypeError, ValueError):
             return default
 
+    def register_layout_engine(self, name: str, engine: LayoutEngineFn) -> None:
+        key = str(name or "").strip().lower()
+        if not key:
+            return
+        self.layout_engines[key] = engine
+
     def _run_layout_strategy(self, pdf_path: Path, profile: DocumentProfile) -> tuple[ExtractedDocument, float, float, str, str]:
+        engine_key = (self.settings.layout_engine or "default").strip().lower()
+        engine = self.layout_engines.get(engine_key) or self.layout_engines.get("default")
+        if engine is None:
+            return self._run_layout_strategy_default(pdf_path, profile)
+        try:
+            return engine(pdf_path, profile)
+        except Exception:
+            return self._run_layout_strategy_default(pdf_path, profile)
+
+    def _run_layout_strategy_default(self, pdf_path: Path, profile: DocumentProfile) -> tuple[ExtractedDocument, float, float, str, str]:
         if self.docling_adapter.available:
             try:
                 extracted = self.docling_adapter.extract(pdf_path, profile)
@@ -1036,6 +1216,10 @@ class ExtractionRouter:
                 return extracted, 0.90, 0.20, "docling adapter used + layout structure enrichment", "docling"
             except Exception:
                 pass
+        extracted, conf, cost, notes = self.layout.extract(pdf_path, profile)
+        return extracted, conf, cost, notes, self.layout.name
+
+    def _run_layout_lite_only(self, pdf_path: Path, profile: DocumentProfile) -> tuple[ExtractedDocument, float, float, str, str]:
         extracted, conf, cost, notes = self.layout.extract(pdf_path, profile)
         return extracted, conf, cost, notes, self.layout.name
 
@@ -1110,6 +1294,65 @@ class ExtractionRouter:
             and profile.image_area_ratio >= self.handwriting_image_ratio_threshold
         )
 
+    def _domain_risk_boost(self, profile: DocumentProfile) -> float:
+        if profile.domain_confidence < self.settings.router_domain_risk_confidence_gate:
+            return 0.0
+        if profile.domain_hint in {"legal", "medical"}:
+            return self.settings.router_domain_risk_boost_high
+        if profile.domain_hint in {"financial", "technical"}:
+            return self.settings.router_domain_risk_boost_medium
+        return 0.0
+
+    def _build_policy_context(self, profile: DocumentProfile, budget_spent: float) -> RoutingPolicyContext:
+        budget_headroom = self.settings.max_cost_per_doc - budget_spent
+        risk_boost = self._domain_risk_boost(profile)
+        adjusted_layout_floor = max(0.0, min(1.0, self.layout_confidence_floor + risk_boost))
+        adjusted_vision_floor = max(0.0, min(1.0, self.escalate_to_vision_floor + risk_boost))
+
+        allowed = budget_headroom >= self.settings.router_budget_min_vision_headroom
+        if not self.settings.enable_vision:
+            reason = "vision_disabled"
+        elif allowed:
+            reason = "budget_headroom_ok"
+        else:
+            reason = "insufficient_budget_headroom"
+
+        return RoutingPolicyContext(
+            domain_hint=profile.domain_hint,
+            domain_confidence=profile.domain_confidence,
+            max_cost_per_doc=self.settings.max_cost_per_doc,
+            budget_spent=budget_spent,
+            budget_headroom=budget_headroom,
+            min_vision_headroom=self.settings.router_budget_min_vision_headroom,
+            layout_confidence_floor=adjusted_layout_floor,
+            vision_confidence_floor=adjusted_vision_floor,
+            domain_risk_boost=risk_boost,
+            vision_allowed=bool(self.settings.enable_vision and allowed),
+            vision_policy_reason=reason,
+        )
+
+    def _build_page_strategy_history(self, extracted: ExtractedDocument, attempts: list[RoutingAttempt]) -> list[PageStrategyHistory]:
+        attempted = [a.strategy for a in attempts]
+        final_strategy = attempted[-1] if attempted else "unknown"
+        history: list[PageStrategyHistory] = []
+        for page in extracted.pages:
+            ocr_word_conf_mean = None
+            if isinstance(page.quality, dict) and "ocr_word_conf_mean" in page.quality:
+                ocr_word_conf_mean = float(page.quality.get("ocr_word_conf_mean", 0.0))
+            history.append(
+                PageStrategyHistory(
+                    page_number=page.page_number,
+                    attempted_strategies=attempted,
+                    final_strategy=final_strategy,
+                    unresolved_needs_vision=page.unresolved_needs_vision,
+                    block_count=len(page.blocks),
+                    table_count=len(page.tables),
+                    figure_count=len(page.figures),
+                    ocr_word_conf_mean=ocr_word_conf_mean,
+                )
+            )
+        return history
+
     def _write_ledger(
         self,
         *,
@@ -1134,6 +1377,9 @@ class ExtractionRouter:
         notes: str,
         detected_language: str | None = None,
         ocr_lang_used: str | None = None,
+        policy_context: RoutingPolicyContext | None = None,
+        routing_attempts: list[RoutingAttempt] | None = None,
+        page_strategy_history: list[PageStrategyHistory] | None = None,
     ) -> None:
         strategy_label = self._normalize_strategy_label(strategy, notes)
         notes_final = self._augment_ledger_notes(
@@ -1166,6 +1412,9 @@ class ExtractionRouter:
             notes=notes_final,
             detected_language=detected_language,
             ocr_lang_used=ocr_lang_used,
+            policy_context=policy_context,
+            routing_attempts=routing_attempts or [],
+            page_strategy_history=page_strategy_history or [],
         )
         self.store.append_jsonl(self.store.ledger_file, entry.model_dump(mode="json"))
 
@@ -1268,14 +1517,34 @@ class ExtractionRouter:
 
     def extract(self, pdf_path: Path, profile: DocumentProfile) -> ExtractedDocument:
         started = time.perf_counter()
-        logger.info("stage=extraction start doc=%s strategy_hint=%s", profile.doc_name, profile.estimated_extraction_cost)
+        logger.info(
+            "stage=extraction start doc=%s strategy_hint=%s domain=%s domain_conf=%.2f budget_max=%.3f",
+            profile.doc_name,
+            profile.estimated_extraction_cost,
+            profile.domain_hint,
+            profile.domain_confidence,
+            self.settings.max_cost_per_doc,
+        )
 
         escalations: list[str] = []
+        attempts: list[RoutingAttempt] = []
         extracted: ExtractedDocument
         conf: float
         cost: float
         notes: str
         strategy: str
+
+        def _record_attempt(stage: str, strategy_name: str, confidence: float, cost_delta: float, cumulative_cost: float, note: str) -> None:
+            attempts.append(
+                RoutingAttempt(
+                    stage=stage,
+                    strategy=self._normalize_strategy_label(strategy_name, note),
+                    confidence=confidence,
+                    cost_delta=max(0.0, float(cost_delta)),
+                    cumulative_cost=max(0.0, float(cumulative_cost)),
+                    notes=note,
+                )
+            )
 
         handwriting = self._handwriting_detected(profile)
         if profile.origin_type == "scanned_image" or handwriting:
@@ -1283,19 +1552,25 @@ class ExtractionRouter:
             strategy = self.vision.name if self.settings.enable_vision else f"{self.vision.name}_disabled"
             if handwriting:
                 notes = f"{notes}; handwriting_like=true"
+            _record_attempt("initial", strategy, conf, cost, cost, notes)
         elif self._profile_prefers_fast(profile):
             extracted, conf, cost, notes = self.fast.extract(pdf_path, profile)
             strategy = self.fast.name
+            _record_attempt("initial", strategy, conf, cost, cost, notes)
             if conf < self.fast_confidence_floor:
                 escalations.append("fast_to_layout")
                 extracted_l, conf_l, cost_l, notes_l, strategy_l = self._run_layout_strategy(pdf_path, profile)
                 extracted, conf, strategy = extracted_l, conf_l, strategy_l
                 cost += cost_l
                 notes = f"{notes}; {notes_l}"
+                _record_attempt("escalation_fast_to_layout", strategy, conf, cost_l, cost, notes_l)
         else:
             extracted, conf, cost, notes, strategy = self._run_layout_strategy(pdf_path, profile)
+            _record_attempt("initial", strategy, conf, cost, cost, notes)
 
-        if conf < self.layout_confidence_floor and cost <= self.settings.max_cost_per_doc:
+        policy = self._build_policy_context(profile, cost)
+
+        if conf < policy.layout_confidence_floor and policy.vision_allowed:
             if strategy != self.vision.name and not strategy.startswith(f"{self.vision.name}_"):
                 escalations.append("layout_to_vision")
                 extracted_v, conf_v, cost_v, notes_v = self.vision.extract(pdf_path, profile)
@@ -1304,8 +1579,12 @@ class ExtractionRouter:
                 strategy = self.vision.name if self.settings.enable_vision else f"{strategy}+vision_disabled"
                 cost += cost_v
                 notes = f"{notes}; {notes_v}"
+                _record_attempt("escalation_layout_to_vision", strategy, conf, cost_v, cost, notes_v)
+                policy = self._build_policy_context(profile, cost)
+        elif conf < policy.layout_confidence_floor and not policy.vision_allowed:
+            escalations.append("layout_to_vision_blocked")
 
-        if conf < self.escalate_to_vision_floor and cost <= self.settings.max_cost_per_doc:
+        if conf < policy.vision_confidence_floor and policy.vision_allowed:
             if strategy != self.vision.name and not strategy.startswith(f"{self.vision.name}_"):
                 escalations.append("low_conf_to_vision")
                 extracted_v, conf_v, cost_v, notes_v = self.vision.extract(pdf_path, profile)
@@ -1314,6 +1593,10 @@ class ExtractionRouter:
                 strategy = self.vision.name if self.settings.enable_vision else f"{strategy}+vision_disabled"
                 cost += cost_v
                 notes = f"{notes}; {notes_v}"
+                _record_attempt("escalation_low_conf_to_vision", strategy, conf, cost_v, cost, notes_v)
+                policy = self._build_policy_context(profile, cost)
+        elif conf < policy.vision_confidence_floor and not policy.vision_allowed:
+            escalations.append("low_conf_to_vision_blocked")
 
         elapsed = int((time.perf_counter() - started) * 1000)
         pages_processed = len(extracted.pages) if extracted is not None else None
@@ -1325,6 +1608,7 @@ class ExtractionRouter:
         if "ocr_lang_used=" in notes:
             ocr_lang_used = notes.split("ocr_lang_used=", 1)[1].split(";", 1)[0].strip()
         detected_language = self._resolve_detected_language(profile, extracted, ocr_lang_used)
+        page_history = self._build_page_strategy_history(extracted, attempts)
         self._write_ledger(
             doc_id=profile.doc_id,
             origin_type=profile.origin_type,
@@ -1347,13 +1631,19 @@ class ExtractionRouter:
             notes=notes,
             detected_language=detected_language,
             ocr_lang_used=ocr_lang_used,
+            policy_context=policy,
+            routing_attempts=attempts,
+            page_strategy_history=page_history,
         )
         logger.info(
-            "stage=extraction end doc=%s strategy=%s pages=%s confidence=%.3f duration_ms=%s",
+            "stage=extraction end doc=%s strategy=%s pages=%s confidence=%.3f duration_ms=%s budget_spent=%.3f budget_headroom=%.3f escalations=%s",
             profile.doc_name,
             strategy,
             len(extracted.pages),
             conf,
             elapsed,
+            cost,
+            policy.budget_headroom,
+            "|".join(escalations) if escalations else "none",
         )
         return extracted
