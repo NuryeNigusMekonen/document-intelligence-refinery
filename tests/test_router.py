@@ -11,6 +11,7 @@ from refinery.models import (
     LanguageHint,
     ProvenanceRef,
     TableObject,
+    TextBlock,
 )
 from refinery.storage import ArtifactStore
 
@@ -20,6 +21,8 @@ def _profile(
     *,
     origin: Literal["native_digital", "scanned_image", "mixed", "form_fillable"] = "native_digital",
     layout: Literal["single_column", "multi_column", "table_heavy", "figure_heavy", "mixed"] = "single_column",
+    language: str = "en",
+    language_confidence: float = 0.7,
 ) -> DocumentProfile:
     return DocumentProfile(
         doc_id="doc_x",
@@ -27,7 +30,7 @@ def _profile(
         sha256="abc",
         origin_type=origin,
         layout_complexity=layout,
-        language_hint=LanguageHint(language="en", confidence=0.7),
+        language_hint=LanguageHint(language=language, confidence=language_confidence),
         domain_hint="general",
         estimated_extraction_cost=cost,
         page_count=1,
@@ -51,7 +54,7 @@ def test_router_escalates_to_layout(tmp_path: Path):
 
     router.extract(Path("dummy.pdf"), _profile("fast_text_sufficient"))
     ledger = store.read_jsonl(store.ledger_file)
-    assert ledger[-1]["strategy_used"] == "layout_lite"
+    assert ledger[-1]["strategy_used"] == "strategy_b_layout_docling"
     assert "fast_to_layout" in ledger[-1]["escalations"]
 
 
@@ -66,7 +69,7 @@ def test_router_scanned_prefers_vision(tmp_path: Path):
 
     router.extract(Path("dummy.pdf"), _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy"))
     ledger = store.read_jsonl(store.ledger_file)
-    assert ledger[-1]["strategy_used"] in {"vision", "vision_disabled"}
+    assert ledger[-1]["strategy_used"] == "strategy_c_local_ocr"
 
 
 def test_router_fast_single_column_stays_fast_when_confident(tmp_path: Path):
@@ -79,7 +82,7 @@ def test_router_fast_single_column_stays_fast_when_confident(tmp_path: Path):
 
     router.extract(Path("dummy.pdf"), _profile("fast_text_sufficient", origin="native_digital", layout="single_column"))
     ledger = store.read_jsonl(store.ledger_file)
-    assert ledger[-1]["strategy_used"] == "fast_text"
+    assert ledger[-1]["strategy_used"] == "strategy_a_fast_text"
     assert "fast_to_layout" not in ledger[-1]["escalations"]
 
 
@@ -96,7 +99,7 @@ def test_router_figure_heavy_uses_layout_not_fast(tmp_path: Path):
 
     router.extract(Path("dummy.pdf"), _profile("needs_layout_model", origin="native_digital", layout="figure_heavy"))
     ledger = store.read_jsonl(store.ledger_file)
-    assert ledger[-1]["strategy_used"] == "layout_lite"
+    assert ledger[-1]["strategy_used"] == "strategy_b_layout_docling"
 
 
 def test_router_docling_is_enriched_with_layout_structures(tmp_path: Path, monkeypatch):
@@ -139,3 +142,98 @@ def test_router_docling_is_enriched_with_layout_structures(tmp_path: Path, monke
     extracted = router.extract(Path("dummy.pdf"), _profile("needs_layout_model", origin="mixed", layout="mixed"))
     assert len(extracted.pages[0].tables) == 1
     assert len(extracted.pages[0].figures) == 1
+
+
+def test_router_does_not_force_language_from_ocr_lang_when_no_text(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    router.vision.extract = lambda pdf_path, profile: (_doc(), 0.84, 0.12, "docling_full_page_ocr local; ocr_lang_used=eng+amh")
+
+    router.extract(
+        Path("dummy.pdf"),
+        _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy", language="unknown", language_confidence=0.0),
+    )
+    ledger = store.read_jsonl(store.ledger_file)
+    assert ledger[-1]["detected_language"] == "unknown"
+    assert ledger[-1]["ocr_lang_used"] == "eng+amh"
+
+
+def test_router_infers_amharic_from_extracted_script_when_ocr_lang_missing(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    prov = ProvenanceRef(doc_name="x.pdf", ref_type="pdf_bbox", page_number=1, bbox=(0.0, 0.0, 10.0, 10.0), content_hash="pending")
+    extracted_with_amharic = ExtractedDocument(
+        doc_id="doc_x",
+        doc_name="x.pdf",
+        pages=[
+            ExtractedPage(
+                page_number=1,
+                width=100,
+                height=100,
+                blocks=[
+                    # Ge'ez script sample
+                    TextBlock(
+                        text="የኦዲት ሪፖርት ዓመታዊ ግምገማ",
+                        bbox=(0.0, 0.0, 10.0, 10.0),
+                        reading_order=0,
+                        confidence=0.8,
+                        provenance=prov,
+                    )
+                ],
+                tables=[],
+                figures=[],
+            )
+        ],
+    )
+
+    router.vision.extract = lambda pdf_path, profile: (extracted_with_amharic, 0.84, 0.12, "docling_full_page_ocr local")
+
+    router.extract(
+        Path("dummy.pdf"),
+        _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy", language="unknown", language_confidence=0.0),
+    )
+    ledger = store.read_jsonl(store.ledger_file)
+    assert ledger[-1]["detected_language"] == "am"
+
+
+def test_router_prefers_extracted_text_language_over_profile_hint(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    prov = ProvenanceRef(doc_name="x.pdf", ref_type="pdf_bbox", page_number=1, bbox=(0.0, 0.0, 10.0, 10.0), content_hash="pending")
+    extracted_with_amharic = ExtractedDocument(
+        doc_id="doc_x",
+        doc_name="x.pdf",
+        pages=[
+            ExtractedPage(
+                page_number=1,
+                width=100,
+                height=100,
+                blocks=[
+                    TextBlock(
+                        text="የኦዲት ሪፖርት ዓመታዊ ግምገማ",
+                        bbox=(0.0, 0.0, 10.0, 10.0),
+                        reading_order=0,
+                        confidence=0.8,
+                        provenance=prov,
+                    )
+                ],
+                tables=[],
+                figures=[],
+            )
+        ],
+    )
+
+    router.vision.extract = lambda pdf_path, profile: (extracted_with_amharic, 0.84, 0.12, "docling_full_page_ocr local")
+
+    router.extract(
+        Path("dummy.pdf"),
+        _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy", language="en", language_confidence=0.9),
+    )
+    ledger = store.read_jsonl(store.ledger_file)
+    assert ledger[-1]["detected_language"] == "am"

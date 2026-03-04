@@ -17,6 +17,7 @@ HEADING_RE = re.compile(r"^(\d+(\.\d+)*)\s+.+|^[A-Z][A-Za-z\s]{3,60}$")
 LIST_ITEM_RE = re.compile(r"^\s*(\d+\.|[-*])\s+")
 CROSS_REF_RE = re.compile(r"see\s+(table|figure|section)\s+\d+", re.IGNORECASE)
 RESOLVABLE_REF_RE = re.compile(r"see\s+(table|figure|section)\s+(\d+)", re.IGNORECASE)
+ETHIOPIC_RE = re.compile(r"[\u1200-\u137F]")
 
 
 @dataclass
@@ -137,6 +138,26 @@ class ChunkingEngine:
             chunks.append("\n".join(current))
         return chunks
 
+    def _bbox_overlap_ratio(self, a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        inter_w = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        inter_h = max(0.0, min(ay1, by1) - max(ay0, by0))
+        inter_area = inter_w * inter_h
+        area_a = max((ax1 - ax0) * (ay1 - ay0), 1e-6)
+        return inter_area / area_a
+
+    def _should_suppress_block_for_table(self, block_text: str, block_bbox: tuple[float, float, float, float], table_bboxes: list[tuple[float, float, float, float]]) -> bool:
+        if not table_bboxes:
+            return False
+        max_overlap = max((self._bbox_overlap_ratio(block_bbox, tb) for tb in table_bboxes), default=0.0)
+        if max_overlap < 0.6:
+            return False
+        ethiopic_chars = len(ETHIOPIC_RE.findall(block_text or ""))
+        if ethiopic_chars >= 3:
+            return False
+        return True
+
     def run(self, extracted: ExtractedDocument) -> list[LogicalDocumentUnit]:
         started = time.perf_counter()
         logger.info("stage=chunking start doc=%s", extracted.doc_name)
@@ -145,9 +166,12 @@ class ChunkingEngine:
         pending_resolved_refs: list[_ResolvableRef] = []
 
         for page in extracted.pages:
+            table_bboxes = [t.bbox for t in page.tables if t.bbox is not None]
             for block in sorted(page.blocks, key=lambda b: b.reading_order):
                 text = normalize_text(block.text)
                 if not text:
+                    continue
+                if self._should_suppress_block_for_table(text, block.bbox, table_bboxes):
                     continue
 
                 if HEADING_RE.match(text):

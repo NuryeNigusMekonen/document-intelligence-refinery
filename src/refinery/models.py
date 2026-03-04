@@ -73,6 +73,7 @@ class ExtractedPage(BaseModel):
     blocks: list[TextBlock] = Field(default_factory=list)
     tables: list[TableObject] = Field(default_factory=list)
     figures: list[FigureObject] = Field(default_factory=list)
+    quality: dict[str, float] | None = None
     unresolved_needs_vision: bool = False
 
 
@@ -115,10 +116,22 @@ class PageIndex(BaseModel):
 class LedgerEntry(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     doc_id: str
+    origin_type: str | None = None
+    layout_complexity: str | None = None
     strategy_used: str
     confidence_score: float
     cost_estimate: float
     processing_time_ms: int
+    pages_processed: int | None = None
+    blocks_extracted: int | None = None
+    tables_extracted: int | None = None
+    table_pages_count: int | None = None
+    ocr_word_conf_mean: float | None = None
+    ethiopic_ratio: float | None = None
+    garbage_ratio: float | None = None
+    avg_word_len: float | None = None
+    alpha_ratio: float | None = None
+    token_diversity: float | None = None
     escalations: list[str] = Field(default_factory=list)
     notes: str = ""
     detected_language: str | None = None
