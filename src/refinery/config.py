@@ -29,10 +29,17 @@ class Settings(BaseSettings):
     multilingual_embeddings: bool = Field(default=True)
     language_detection_mode: Literal["script", "langdetect"] = Field(default="script")
     use_ollama_summaries: bool = Field(default=True)
-    ollama_model: str = Field(default="llama3.2:3b")
+    ollama_model: str = Field(default="llama3.1:8b")
     ollama_host: str = Field(default="http://127.0.0.1:11434")
+    use_ollama_answers: bool = Field(default=True)
+    ollama_answer_model: str = Field(default="")
+    ollama_max_context_chars: int = Field(default=12000)
     query_use_langgraph: bool = Field(default=True)
     query_semantic_top_k: int = Field(default=5)
+
+    def model_post_init(self, __context) -> None:
+        if not self.ollama_answer_model:
+            self.ollama_answer_model = self.ollama_model
 
     @property
     def resolved_artifacts_dir(self) -> Path:

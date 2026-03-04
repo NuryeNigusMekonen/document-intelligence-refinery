@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, TypedDict
+from urllib import request
 
 from .facts import FactStore
 from .models import LogicalDocumentUnit, PageIndex, ProvenanceRef, QueryAnswer
@@ -34,6 +35,7 @@ class QueryAgent:
         self.fact_store = fact_store
         self._langgraph_app: Any | None = None
         self._langgraph_checked = False
+        self._ocr_refusal = "No high-confidence answer could be synthesized from OCR text for this question."
 
     def _load_ldus(self, doc_id: str) -> list[LogicalDocumentUnit]:
         rows = self.store.read_jsonl(self.store.chunks_dir / f"{doc_id}.jsonl")
@@ -136,6 +138,246 @@ class QueryAgent:
         q = question.lower()
         return any(k in q for k in ["section", "where in", "capital expenditure", "capex", "projections", "q1", "q2", "q3", "q4", "table", "figure"])
 
+    def _tokenize_answer_text(self, text: str) -> list[str]:
+        return [t.lower() for t in re.findall(r"\w+", text, flags=re.UNICODE)]
+
+    def _is_noisy_answer_text(self, text: str) -> bool:
+        t = normalize_text(text or "")
+        if len(t) < 8:
+            return True
+        tokens = self._tokenize_answer_text(t)
+        if len(tokens) < 3:
+            return True
+        unique_ratio = len(set(tokens)) / max(len(tokens), 1)
+        if unique_ratio < 0.35:
+            return True
+        most_common = max((tokens.count(tok) for tok in set(tokens)), default=0)
+        if most_common / max(len(tokens), 1) > 0.5:
+            return True
+        return False
+
+    def _is_table_like_hit(self, hit: LogicalDocumentUnit) -> bool:
+        if hit.chunk_type == "table":
+            return True
+        text = hit.content or ""
+        if text.count("|") >= 8 and text.count("\n") >= 1:
+            return True
+        return False
+
+    def _parse_pipe_table_rows(self, text: str) -> list[list[str]]:
+        rows: list[list[str]] = []
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if "|" not in line:
+                continue
+            cells = [c.strip() for c in line.split("|")]
+            if cells and cells[0] == "":
+                cells = cells[1:]
+            if cells and cells[-1] == "":
+                cells = cells[:-1]
+            if not cells:
+                continue
+            non_empty = [c for c in cells if c]
+            if len(non_empty) < 2:
+                continue
+            rows.append(cells)
+        return rows
+
+    def _compact_table_answer_from_hit(self, hit: LogicalDocumentUnit, question: str) -> str | None:
+        text = hit.content or ""
+        rows = self._parse_pipe_table_rows(text)
+        if len(rows) < 2:
+            return None
+
+        header = rows[0]
+        data_rows = rows[1:]
+        header_cells = [c for c in header if c][:6]
+        header_text = " | ".join(header_cells) if header_cells else "(no clear header)"
+
+        q_tokens = [t for t in self._tokenize_answer_text(question) if len(t) >= 2]
+
+        def row_score(row: list[str]) -> tuple[int, int]:
+            row_text = " ".join(row).lower()
+            overlap = sum(1 for t in q_tokens if t in row_text)
+            numeric = len(re.findall(r"\d+(?:[\.,]\d+)?", row_text))
+            return overlap, numeric
+
+        scored = [(idx, row, *row_score(row)) for idx, row in enumerate(data_rows)]
+        scored_sorted = sorted(scored, key=lambda x: (x[2], x[3]), reverse=True)
+        picked = [item for item in scored_sorted[:3] if item[2] > 0 or item[3] > 0]
+        if not picked:
+            picked = scored_sorted[:2]
+
+        picked = sorted(picked, key=lambda x: x[0])
+        row_summaries: list[str] = []
+        for _idx, row, _overlap, _numeric in picked:
+            compact_cells = [c for c in row if c][:6]
+            if not compact_cells:
+                continue
+            row_summaries.append(" | ".join(compact_cells))
+
+        if not row_summaries:
+            return None
+
+        summary = f"Table summary: columns {header_text}. Key rows: " + "; ".join(row_summaries)
+        return summary[:900]
+
+    def _compact_pipe_stream_answer(self, text: str, question: str) -> str | None:
+        if (text or "").count("|") < 12:
+            return None
+        cells = [c.strip() for c in (text or "").split("|") if c.strip()]
+        if len(cells) < 8:
+            return None
+
+        q_tokens = [t for t in self._tokenize_answer_text(question) if len(t) >= 2]
+        selected: list[str] = []
+        seen: set[str] = set()
+        for cell in cells:
+            cell_l = cell.lower()
+            has_overlap = any(t in cell_l for t in q_tokens)
+            has_number = bool(re.search(r"\d+(?:[\.,]\d+)?", cell_l))
+            if not (has_overlap or has_number):
+                continue
+            if cell_l in seen:
+                continue
+            seen.add(cell_l)
+            selected.append(cell)
+            if len(selected) >= 10:
+                break
+
+        head = " | ".join(cells[:8])
+        key_values = " | ".join(selected[:10]) if selected else " | ".join(cells[8:16])
+        return f"Table-like summary: {head}. Key values: {key_values}"[:900]
+
+    def _compose_answer_from_hits(self, hits: list[LogicalDocumentUnit], question: str) -> str:
+        for hit in hits[:3]:
+            if not self._is_table_like_hit(hit):
+                continue
+            compact = self._compact_table_answer_from_hit(hit, question)
+            if compact:
+                return compact
+
+        for hit in hits[:3]:
+            compact_stream = self._compact_pipe_stream_answer(hit.content or "", question)
+            if compact_stream:
+                return compact_stream
+
+        snippets: list[str] = []
+        seen: set[str] = set()
+        for hit in hits:
+            raw = hit.content or ""
+            text = normalize_text(raw).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            if self._is_noisy_answer_text(text):
+                continue
+            seen.add(key)
+            snippets.append(text)
+            if len(snippets) >= 3:
+                break
+
+        if snippets:
+            return " ".join(snippets)[:900]
+
+        fallback = " ".join([(h.content or "") for h in hits[:3]]).strip()
+        return normalize_text(fallback)[:900]
+
+    def _build_ollama_context_from_hits(self, hits: list[LogicalDocumentUnit]) -> str:
+        max_chars = max(int(self.store.settings.ollama_max_context_chars), 1000)
+        parts: list[str] = []
+        used = 0
+        for idx, hit in enumerate(hits[:8], start=1):
+            text = normalize_text(hit.content or "").strip()
+            if not text:
+                continue
+            line = f"[chunk {idx}] {text}"
+            if used + len(line) > max_chars and parts:
+                break
+            parts.append(line)
+            used += len(line)
+        return "\n".join(parts)
+
+    def _extract_amharic_phrases(self, text: str) -> set[str]:
+        phrases = re.findall(r"[\u1200-\u137F]{3,}", text or "")
+        return {p for p in phrases if p}
+
+    def _ollama_output_grounded(self, answer: str, context: str) -> bool:
+        answer_text = answer or ""
+        context_text = context or ""
+        numeric_tokens = set(re.findall(r"\d+(?:[\.,]\d+)?", context_text))
+        if any(tok in answer_text for tok in numeric_tokens):
+            return True
+        amharic_phrases = self._extract_amharic_phrases(context_text)
+        if any(phrase in answer_text for phrase in amharic_phrases):
+            return True
+        return False
+
+    def _synthesize_with_ollama(self, question: str, context: str) -> str | None:
+        if not self.store.settings.use_ollama_answers:
+            return None
+        if not (context or "").strip():
+            return None
+
+        prompt = (
+            "System: Answer only using the provided context. "
+            "If missing, say 'Not found in context'.\n\n"
+            f"User question: {question}\n\n"
+            f"Context:\n{context}\n"
+        )
+        payload = {
+            "model": self.store.settings.ollama_answer_model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        try:
+            host = self.store.settings.ollama_host.rstrip("/")
+            req = request.Request(
+                f"{host}/api/generate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=45) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(raw)
+            output = str(data.get("response", "")).strip()
+            return output or None
+        except Exception:
+            return None
+
+    def _fallback_answer_with_ollama(self, doc_id: str, question: str, hits: list[LogicalDocumentUnit], tool_trace: list[str]) -> dict:
+        provenance = self._provenance_from_hits(doc_id, hits)
+        context = self._build_ollama_context_from_hits(hits)
+        if not context:
+            return {
+                "answer": self._ocr_refusal,
+                "provenance_chain": [p.model_dump(mode="json") for p in provenance],
+                "confidence": 0.25,
+                "tool_trace": tool_trace,
+            }
+
+        ollama_answer = self._synthesize_with_ollama(question, context)
+        if not ollama_answer:
+            return {
+                "answer": self._ocr_refusal,
+                "provenance_chain": [p.model_dump(mode="json") for p in provenance],
+                "confidence": 0.25,
+                "tool_trace": tool_trace,
+            }
+
+        confidence = 0.25
+        if self._ollama_output_grounded(ollama_answer, context):
+            confidence = 0.45
+        return {
+            "answer": ollama_answer,
+            "provenance_chain": [p.model_dump(mode="json") for p in provenance],
+            "confidence": confidence,
+            "tool_trace": tool_trace,
+        }
+
     def _query_interface_linear(self, doc_id: str, question: str) -> dict:
         tool_trace: list[str] = []
 
@@ -162,7 +404,19 @@ class QueryAgent:
         tool_trace.append("semantic_search")
         hits = self.semantic_search_tool(doc_id, semantic_query, top_k=self.store.settings.query_semantic_top_k)
         if hits:
-            answer_text = " ".join([(h.content or "") for h in hits[:3]]).strip()[:900]
+            answer_text = self._compose_answer_from_hits(hits, question)
+            if self._is_noisy_answer_text(answer_text):
+                tool_trace.append("structured_query")
+                rows = self.structured_query_tool(question, doc_id=doc_id)
+                if rows:
+                    provenance = self._provenance_from_fact_rows(doc_id, rows)
+                    return {
+                        "answer": json.dumps(rows[:5], ensure_ascii=False),
+                        "provenance_chain": [p.model_dump(mode="json") for p in provenance],
+                        "confidence": 0.58,
+                        "tool_trace": tool_trace,
+                    }
+                return self._fallback_answer_with_ollama(doc_id, question, hits, tool_trace)
             provenance = self._provenance_from_hits(doc_id, hits)
             return {
                 "answer": answer_text,
@@ -247,10 +501,34 @@ class QueryAgent:
 
         def finalize_node(state: QueryGraphState) -> QueryGraphState:
             doc_id = str(state.get("doc_id") or "")
+            question = str(state.get("question") or "")
             tool_trace = list(state.get("tool_trace") or [])
             hits = state.get("hits") or []
             if hits:
-                answer_text = " ".join([(h.content or "") for h in hits[:3]]).strip()[:900]
+                answer_text = self._compose_answer_from_hits(hits, question)
+                if self._is_noisy_answer_text(answer_text):
+                    rows = self.structured_query_tool(question, doc_id=doc_id)
+                    if rows:
+                        if "structured_query" not in tool_trace:
+                            tool_trace.append("structured_query")
+                        provenance = self._provenance_from_fact_rows(doc_id, rows)
+                        return {
+                            "answer": json.dumps(rows[:5], ensure_ascii=False),
+                            "provenance_chain": [p.model_dump(mode="json") for p in provenance],
+                            "confidence": 0.58,
+                            "tool_trace": tool_trace,
+                        }
+                    if "structured_query" not in tool_trace:
+                        tool_trace.append("structured_query")
+                    fallback = self._fallback_answer_with_ollama(doc_id, question, hits, tool_trace)
+                    # Ensure fallback is merged into state (QueryGraphState)
+                    return {
+                        **state,
+                        "answer": fallback.get("answer", "No high-confidence match found."),
+                        "provenance_chain": fallback.get("provenance_chain", []),
+                        "confidence": fallback.get("confidence", 0.2),
+                        "tool_trace": fallback.get("tool_trace", tool_trace),
+                    }
                 provenance = self._provenance_from_hits(doc_id, hits)
                 return {
                     "answer": answer_text,

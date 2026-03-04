@@ -72,13 +72,13 @@ def main() -> None:
     if args.command == "ingest":
         for pdf in _expand_inputs(args.pdfs):
             result = pipeline.ingest(pdf)
-            print(json.dumps({"pdf": str(pdf), **result}, indent=2))
+            print(json.dumps({"pdf": str(pdf), **result}, indent=2, ensure_ascii=False))
         return
 
     if args.command == "build-index":
         for pdf in _expand_inputs(args.pdfs):
             result = pipeline.build_index(pdf)
-            print(json.dumps({"pdf": str(pdf), **result}, indent=2))
+            print(json.dumps({"pdf": str(pdf), **result}, indent=2, ensure_ascii=False))
         return
 
     store = ArtifactStore(settings)
@@ -91,22 +91,22 @@ def main() -> None:
 
     if args.command == "query":
         ans = agent.query(doc_id, args.question)
-        print(json.dumps(ans.model_dump(mode="json"), indent=2))
+        print(json.dumps(ans.model_dump(mode="json"), indent=2, ensure_ascii=False))
         return
 
     if args.command == "query-interface":
         out = agent.query_interface(doc_id, args.question)
-        print(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
     if args.command == "audit":
         out = agent.audit_claim(doc_id, args.claim)
-        print(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
     if args.command == "show-pageindex":
         nodes = agent.navigate(doc_id, args.topic)
-        print(json.dumps(nodes, indent=2))
+        print(json.dumps(nodes, indent=2, ensure_ascii=False))
         return
 
     if args.command == "open-citation":
@@ -114,7 +114,7 @@ def main() -> None:
         if len(bbox) != 4:
             raise ValueError("bbox must be x0,y0,x1,y1")
         out = open_citation_snippet(store, doc_id, args.page, bbox)
-        print(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
 
