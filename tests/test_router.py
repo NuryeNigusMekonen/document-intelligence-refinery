@@ -23,6 +23,8 @@ def _profile(
     layout: Literal["single_column", "multi_column", "table_heavy", "figure_heavy", "mixed"] = "single_column",
     language: str = "en",
     language_confidence: float = 0.7,
+    domain: Literal["financial", "legal", "technical", "medical", "general"] = "general",
+    domain_confidence: float = 0.7,
 ) -> DocumentProfile:
     return DocumentProfile(
         doc_id="doc_x",
@@ -31,7 +33,8 @@ def _profile(
         origin_type=origin,
         layout_complexity=layout,
         language_hint=LanguageHint(language=language, confidence=language_confidence),
-        domain_hint="general",
+        domain_hint=domain,
+        domain_confidence=domain_confidence,
         estimated_extraction_cost=cost,
         page_count=1,
         avg_char_density=0.0003,
@@ -56,6 +59,10 @@ def test_router_escalates_to_layout(tmp_path: Path):
     ledger = store.read_jsonl(store.ledger_file)
     assert ledger[-1]["strategy_used"] == "strategy_b_layout_docling"
     assert "fast_to_layout" in ledger[-1]["escalations"]
+    assert ledger[-1]["policy_context"]["domain_hint"] == "general"
+    assert len(ledger[-1]["routing_attempts"]) >= 2
+    assert len(ledger[-1]["page_strategy_history"]) == 1
+    assert ledger[-1]["page_strategy_history"][0]["final_strategy"] == "strategy_b_layout_docling"
 
 
 def test_router_scanned_prefers_vision(tmp_path: Path):
@@ -237,3 +244,89 @@ def test_router_prefers_extracted_text_language_over_profile_hint(tmp_path: Path
     )
     ledger = store.read_jsonl(store.ledger_file)
     assert ledger[-1]["detected_language"] == "am"
+
+
+def test_router_uses_registered_layout_engine(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path, layout_engine="custom_layout")
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    router.register_layout_engine(
+        "custom_layout",
+        lambda pdf_path, profile: (_doc(), 0.88, 0.05, "custom layout", "custom_layout"),
+    )
+
+    router.extract(Path("dummy.pdf"), _profile("needs_layout_model", origin="mixed", layout="mixed"))
+    ledger = store.read_jsonl(store.ledger_file)
+    assert ledger[-1]["strategy_used"] == "custom_layout"
+
+
+def test_vision_uses_registered_vlm_provider(tmp_path: Path):
+    settings = Settings(
+        workspace_root=tmp_path,
+        use_openrouter_vlm=True,
+        openrouter_api_key="dummy",
+        vlm_provider="custom_vlm",
+    )
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    unresolved_doc = ExtractedDocument(
+        doc_id="doc_x",
+        doc_name="x.pdf",
+        pages=[ExtractedPage(page_number=1, width=100, height=100, unresolved_needs_vision=True)],
+    )
+    router.vision._run_local_strategy_c = lambda pdf_path, profile: (unresolved_doc, 0.40, 0.0, "local low")
+    router.vision.register_vlm_provider("custom_vlm", lambda pdf_path, profile: (_doc(), 0.91, 0.15, "custom vlm"))
+
+    result_doc, result_conf, _result_cost, result_notes = router.vision.extract(
+        Path("dummy.pdf"),
+        _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy"),
+    )
+    assert result_doc.doc_id == "doc_x"
+    assert result_conf == 0.91
+    assert result_notes == "custom vlm"
+
+
+def test_router_blocks_vision_escalation_when_budget_headroom_low(tmp_path: Path):
+    settings = Settings(
+        workspace_root=tmp_path,
+        enable_vision=True,
+        max_cost_per_doc=0.12,
+        router_budget_min_vision_headroom=0.05,
+    )
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    router.layout.extract = lambda pdf_path, profile: (_doc(), 0.68, 0.10, "layout_low")
+    router.vision.extract = lambda pdf_path, profile: (_doc(), 0.90, 0.30, "vision")
+
+    router.extract(Path("dummy.pdf"), _profile("needs_layout_model", origin="mixed", layout="mixed"))
+    ledger = store.read_jsonl(store.ledger_file)
+    assert "layout_to_vision_blocked" in ledger[-1]["escalations"]
+    assert ledger[-1]["policy_context"]["vision_allowed"] is False
+    assert ledger[-1]["policy_context"]["vision_policy_reason"] == "insufficient_budget_headroom"
+
+
+def test_router_domain_risk_boost_can_trigger_vision_escalation(tmp_path: Path):
+    settings = Settings(
+        workspace_root=tmp_path,
+        enable_vision=True,
+        max_cost_per_doc=1.0,
+        router_budget_min_vision_headroom=0.05,
+        router_domain_risk_boost_high=0.10,
+    )
+    store = ArtifactStore(settings)
+    router = ExtractionRouter(settings, store)
+
+    router.layout.extract = lambda pdf_path, profile: (_doc(), 0.76, 0.10, "layout_mid")
+    router.vision.extract = lambda pdf_path, profile: (_doc(), 0.89, 0.12, "vision_good")
+
+    router.extract(
+        Path("dummy.pdf"),
+        _profile("needs_layout_model", origin="mixed", layout="mixed", domain="legal", domain_confidence=0.95),
+    )
+    ledger = store.read_jsonl(store.ledger_file)
+    assert "layout_to_vision" in ledger[-1]["escalations"]
+    assert ledger[-1]["policy_context"]["domain_risk_boost"] == 0.10
+    assert ledger[-1]["strategy_used"] == "vision"

@@ -16,6 +16,59 @@ English behavior remains unchanged, with added multilingual support for English 
 	- **C Vision-Augmented (local-first)**: Docling full-page OCR / Tesseract first, then unresolved fallback
 	- Mandatory escalation guard: low-confidence A automatically retries with B
 
+### Confidence formulas and thresholds
+
+Routing and scoring are deterministic and rule-driven.
+
+- Profile base confidence:
+	- `base = 0.9 - 0.5*image_area_ratio - 0.2*whitespace_ratio`
+	- Cost penalties: `-0.25` for `needs_vision_model`, `-0.10` for `needs_layout_model`
+	- Clamp: `[0.05, 0.99]`
+- Strategy A (Fast Text) document confidence:
+	- `fast_conf = min(base, 0.30 + 0.70*pass_ratio)` then clamped to `[0.05, 0.99]`
+	- `pass_ratio = pages_passing_fast_gate / total_pages`
+	- Fast page gate uses:
+		- `fast_min_chars_per_page` (default `100`)
+		- `fast_max_image_area_ratio` (default `0.50`)
+- Strategy B (Layout):
+	- `layout_conf = min(0.95, base + 0.12)`
+- OCR quality score (per scanned page): multiplicative penalties applied to `1.0`
+	- if `ocr_word_conf_mean < 60` => `*0.7`
+	- if `ocr_word_conf_p10 < 30` => `*0.8`
+	- if `garbage_ratio > 0.25` => `*0.7`
+	- if `avg_word_len < 3.0` => `*0.85`
+	- if `token_diversity < 0.25` => `*0.85`
+	- if origin is scanned => additional `*0.9`
+	- Clamp: `[0.05, 0.95]`
+
+Escalation thresholds (from `extraction_rules.yaml`):
+- `fast_confidence_floor` default `0.60` (A -> B)
+- `layout_confidence_floor` default `0.72` (B -> C)
+- `escalate_to_vision_floor` default `0.50` (force C)
+- Handwriting heuristic defaults:
+	- `handwriting_whitespace_threshold=0.92`
+	- `handwriting_char_density_threshold=0.00005`
+	- `handwriting_image_ratio_threshold=0.55`
+
+### Per-element confidence signals
+
+Every extracted structure element now carries both:
+- scalar `confidence` (existing normalized score in `[0,1]`), and
+- `confidence_signals[]` (new granular evidence list).
+
+Signal schema (`ConfidenceSignal`):
+- `signal`: signal name
+- `value`: raw metric value
+- `normalized_value`: normalized metric in `[0,1]` when available
+- `weight`: optional contribution weight
+- `threshold`: optional gate threshold
+- `passed`: optional boolean gate outcome
+
+This applies to:
+- `TextBlock`
+- `TableObject`
+- `FigureObject`
+
 3. **Semantic Chunking Engine**
 	- Emits `LogicalDocumentUnit` records with structural context (`parent_section`, `bounding_box`, relationships)
 	- Enforces chunking constitution rules (table/header integrity, list boundaries, figure caption metadata)
@@ -114,6 +167,38 @@ Every chunk/fact carries:
 - provenance `ref_type` and typed location fields
 - deterministic `content_hash`
 
+## Core Pydantic Schema Design
+
+The core models use explicit Pydantic constraints and validators to enforce provenance integrity:
+
+- `BBox` is a dedicated model (not a tuple alias), with sanity checks:
+	- non-negative coordinates
+	- strict geometry ordering (`x1 > x0`, `y1 > y0`)
+- `ProvenanceRef` validates reference-specific payloads:
+	- `pdf_bbox` / `image_bbox` require `bbox`
+	- `word_section` requires `section_path`
+	- `markdown_lines` requires valid `line_range` (`start >= 1`, `end >= start`)
+	- `excel_cells` requires both `sheet_name` and `cell_range`
+- Page/range semantics are constrained in schema:
+	- `page_number >= 1`
+	- `SectionNode.page_end >= page_start`
+	- confidence and ratio fields bounded to `[0,1]` where appropriate
+
+### Chain-level provenance
+
+When an LDU aggregates multiple source references, chain-level provenance is represented explicitly with `ProvenanceChain`:
+
+- `chain_type="single_source"` for one-step evidence
+- `chain_type="aggregated"` for multi-reference aggregation
+- `chain_type="multi_hop"` for explicit multi-hop reasoning chains
+
+`LogicalDocumentUnit` stores both:
+
+- `page_refs` (flat references for compatibility)
+- `provenance_chain` (explicit chain semantics)
+
+`QueryAnswer` also uses `provenance_chain` as a first-class structure.
+
 Provenance examples by type:
 - PDF: `Page 3 | bbox [x0,y0,x1,y1]`
 - Word: `Section: Financial Results > Revenue`
@@ -187,8 +272,14 @@ export REFINERY_EMBEDDING_MODEL=multilingual-lexical
 # Local-first by default; OpenRouter is opt-in only.
 export REFINERY_USE_OPENROUTER_VLM=false
 export REFINERY_VLM_PROVIDER=openrouter
+export REFINERY_LAYOUT_ENGINE=default
 export REFINERY_VLM_MODEL_LOW_COST=openai/gpt-4o-mini
 export REFINERY_VLM_MODEL_HIGH_QUALITY=google/gemini-2.0-flash-001
+export REFINERY_VLM_LOW_BUDGET_CAP_USD=1.0
+export REFINERY_VLM_LOW_COST_PAGE_COST_ESTIMATE=0.08
+export REFINERY_VLM_HIGH_QUALITY_PAGE_COST_ESTIMATE=0.12
+export REFINERY_VLM_REQUEST_TIMEOUT_SECONDS=60
+export REFINERY_RUNTIME_RULES_FILE=extraction_rules.yaml
 # Only needed if REFINERY_USE_OPENROUTER_VLM=true
 export REFINERY_OPENROUTER_API_KEY=your_key_here
 
@@ -196,6 +287,21 @@ export REFINERY_OPENROUTER_API_KEY=your_key_here
 export REFINERY_QUERY_USE_LANGGRAPH=true
 export REFINERY_QUERY_SEMANTIC_TOP_K=5
 ```
+
+### Extensibility hooks
+
+Extraction internals expose pluggable hooks while preserving normalized output schema (`ExtractedDocument`, bounded confidence fields, provenance guarantees):
+
+- VLM providers:
+	- Register with `VisionExtractor.register_vlm_provider(name, provider_fn)`
+	- Select at runtime with `REFINERY_VLM_PROVIDER`
+	- Provider contract: `(pdf_path, profile) -> (ExtractedDocument, confidence, cost, notes) | None`
+- Layout engines:
+	- Register with `ExtractionRouter.register_layout_engine(name, engine_fn)`
+	- Select at runtime with `REFINERY_LAYOUT_ENGINE`
+	- Engine contract: `(pdf_path, profile) -> (ExtractedDocument, confidence, cost, notes, strategy_name)`
+
+Default behavior remains unchanged (`openrouter` provider, `default` layout engine).
 
 Install LangGraph support:
 
@@ -225,6 +331,44 @@ Example Stage 5 commands:
 refinery query-interface --doc data/file.pdf "What are the capital expenditure projections for Q3?"
 refinery query-interface --doc data/file.pdf "SELECT key, value, page_number FROM facts WHERE key LIKE '%Revenue%' LIMIT 5"
 ```
+
+## Triage Configuration
+
+Triage classification thresholds are fully configurable via `REFINERY_` environment variables.
+
+Key knobs:
+- `REFINERY_TRIAGE_LOW_CHAR_PAGE_THRESHOLD`
+- `REFINERY_TRIAGE_FORM_FILLABLE_MIN_FIELDS`
+- `REFINERY_TRIAGE_SCANNED_IMAGE_MIN_IMAGE_RATIO`
+- `REFINERY_TRIAGE_SCANNED_IMAGE_MAX_CHAR_DENSITY`
+- `REFINERY_TRIAGE_MIXED_MIN_IMAGE_RATIO`
+- `REFINERY_TRIAGE_MIXED_MAX_CHAR_DENSITY`
+- `REFINERY_TRIAGE_MIXED_MODE_PAGES_FRACTION_THRESHOLD`
+- `REFINERY_TRIAGE_TABLE_HEAVY_RATIO`
+- `REFINERY_TRIAGE_FIGURE_HEAVY_IMAGE_RATIO`
+- `REFINERY_TRIAGE_MULTI_COLUMN_MIN_COLUMNS`
+- `REFINERY_TRIAGE_MULTI_COLUMN_FRACTION`
+- `REFINERY_TRIAGE_LAYOUT_MIXED_SIGNAL_COUNT`
+- `REFINERY_TRIAGE_VISION_MAX_CHAR_DENSITY`
+- `REFINERY_TRIAGE_VISION_MIN_IMAGE_RATIO`
+- `REFINERY_TRIAGE_LAYOUT_LOW_CHAR_PAGES_FRACTION`
+
+Notes:
+- Zero-text documents are handled explicitly and produce conservative language/domain confidence.
+- Mixed-mode page evidence is modeled via per-page text+image signals and can drive `origin_type="mixed"`.
+- Domain classification is pluggable (`DomainClassifier` interface), so classifier strategy can be swapped without changing triage core logic.
+
+## Runtime Rules Configuration
+
+`extraction_rules.yaml` now controls runtime behavior for:
+
+- extraction confidence/escalation thresholds (`extraction.*`)
+- chunking rules and regex behavior (`chunking.*`)
+- non-PDF origin/layout/cost profile mapping (`file_type_profiles.*`)
+- domain keyword lists used by triage (`triage.domain_keywords.*`)
+- fact extraction key lists and Amharic keyword source (`facts.*`)
+
+Onboarding a new domain can be done without Python changes by updating `triage.domain_keywords`, tuning `file_type_profiles`, and adjusting thresholds in `extraction_rules.yaml` and/or `REFINERY_*` environment variables.
 
 ## Smoke E2E
 
