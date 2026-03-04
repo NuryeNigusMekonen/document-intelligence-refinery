@@ -19,3 +19,7 @@ data/*.pdf
 !data/sample_multi.png
 !data/sample_multi.xlsx
 reports/
+.langgraph_api/
+=2.16.0
+.env
+.env.*

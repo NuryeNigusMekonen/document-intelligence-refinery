@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "refinery_query_agent": "refinery.langgraph_app:graph"
+  },
+  "env": ".env"
+}

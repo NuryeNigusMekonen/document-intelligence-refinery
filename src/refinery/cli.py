@@ -43,6 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--doc", required=True)
     query.add_argument("question")
 
+    qiface = sub.add_parser("query-interface")
+    qiface.add_argument("--doc", required=True)
+    qiface.add_argument("question")
+
     audit = sub.add_parser("audit")
     audit.add_argument("--doc", required=True)
     audit.add_argument("claim")
@@ -88,6 +92,11 @@ def main() -> None:
     if args.command == "query":
         ans = agent.query(doc_id, args.question)
         print(json.dumps(ans.model_dump(mode="json"), indent=2))
+        return
+
+    if args.command == "query-interface":
+        out = agent.query_interface(doc_id, args.question)
+        print(json.dumps(out, indent=2))
         return
 
     if args.command == "audit":
