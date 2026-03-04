@@ -88,6 +88,8 @@ class LogicalDocumentUnit(BaseModel):
     content: str | None = None
     structured_payload: dict[str, Any] | None = None
     token_count: int
+    bounding_box: BBox | None = None
+    parent_section: str | None = None
     parent_section_path: list[str] = Field(default_factory=list)
     page_refs: list[ProvenanceRef]
     content_hash: str
