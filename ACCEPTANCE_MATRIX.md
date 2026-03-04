@@ -125,6 +125,12 @@ This matrix records challenge-style execution evidence for one representative do
 - **C:** PASS
 - **D:** PASS
 
+### Stage 2 — Strategy C (Local) Evidence
+- **Latest scanned run evidence:** `doc_2013-E.C-Audit-finding-information.pdf` (`doc_id=doc_c716d4a64e11695a`)
+- **strategy_used:** `docling+vision_disabled`
+- **notes signal:** includes `ocr_engine=tesseract ocr_lang_used=eng+amh`
+- **Interpretation:** Local Strategy C path executed (Docling + local Tesseract OCR), with remote OpenRouter path not used in this run.
+
 ### Remaining items to claim strict full completion (non-video)
 1. Address rubric-level gaps already tracked in `CHALLENGE_STATUS.md`:
    - LangGraph-based query agent integration

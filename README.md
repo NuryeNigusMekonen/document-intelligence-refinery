@@ -127,6 +127,41 @@ Ledger rows also include:
 - `detected_language`
 - `ocr_lang_used` (when OCR paths are used)
 
+## Extraction Ledger
+
+Each processed document writes one extraction ledger row in `.refinery/extraction_ledger.jsonl`.
+
+Ledger entries include:
+- strategy selection (`strategy_used`, `escalations`)
+- extraction quality (`confidence_score`, `cost_estimate`, `processing_time_ms`)
+- document characteristics (`origin_type`, `layout_complexity`, `detected_language`)
+- extracted structure counts (`pages_processed`, `blocks_extracted`, `tables_extracted`)
+- extraction context (`notes`, including OCR/docling and handwriting signals when available)
+
+Strategy naming convention:
+- Strategy A – Fast text extraction: `strategy_a_fast_text`
+- Strategy B – Layout-aware extraction with Docling: `strategy_b_layout_docling`
+- Strategy C – Local OCR extraction: `strategy_c_local_ocr`
+
+Legacy labels such as `vision_disabled` may still appear in older historical logs.
+
+Current ledger schema shape:
+- `timestamp`
+- `doc_id`
+- `origin_type`
+- `layout_complexity`
+- `strategy_used`
+- `confidence_score`
+- `cost_estimate`
+- `processing_time_ms`
+- `pages_processed`
+- `blocks_extracted`
+- `tables_extracted`
+- `escalations`
+- `notes`
+- `detected_language`
+- `ocr_lang_used`
+
 ## OCR setup (Ubuntu)
 
 ```bash
@@ -211,6 +246,26 @@ The script prints:
 - top PageIndex sections
 - top retrieved chunk ids
 - final answer + provenance (`doc`, `page`, `bbox`)
+
+## Pipeline Validator
+
+Run the strict stage-by-stage validator:
+
+```bash
+.venv/bin/python scripts/validate_e2e.py data/file.pdf
+```
+
+Optional custom question for Stage 5 validation:
+
+```bash
+.venv/bin/python scripts/validate_e2e.py data/file.pdf --question "What are the capital expenditure projections for Q3?"
+```
+
+Validation behavior:
+- Fail-fast with explicit stage output: `FAILURE: <STAGE_NAME>`
+- Stage 3 checks chunk schema (`ldu_id`, `chunk_type`, `token_count`, `page_refs`, `content_hash`) and non-empty chunk output
+- Stage 5 checks answer/tool trace plus provenance chain structure (`doc_name`, `page_number`, `bbox`)
+- Uses `doc_id` consistently after ingest; `query-interface` is validated with `--doc <doc_id>`
 
 ## Common failure modes
 
