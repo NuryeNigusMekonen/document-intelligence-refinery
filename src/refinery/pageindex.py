@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 ENTITY_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*\b")
 SENTENCE_RE = re.compile(r"[^.!?]+[.!?]")
 EQUATION_RE = re.compile(r"=|\b\d+\s*[+\-*/]\s*\d+")
+NUMBERED_HEADER_RE = re.compile(r"^\s*\d+(?:\.\d+)*\s+.+$")
 
 
 @dataclass
@@ -141,6 +142,120 @@ class PageIndexBuilder:
             merged.extend(self._all_chunks(child, nodes))
         return merged
 
+    def _title_case_ratio(self, text: str) -> float:
+        words = [w for w in re.findall(r"[\w\u1200-\u137F]+", text, flags=re.UNICODE) if w]
+        if not words:
+            return 0.0
+        title_like = sum(1 for w in words if len(w) >= 2 and w[0].isupper())
+        return title_like / max(len(words), 1)
+
+    def _uppercase_ratio(self, text: str) -> float:
+        alpha = [ch for ch in text if ch.isalpha()]
+        if not alpha:
+            return 0.0
+        uppers = sum(1 for ch in alpha if ch.isupper())
+        return uppers / max(len(alpha), 1)
+
+    def _sanitize_section_title(self, text: str) -> str:
+        title = re.sub(r"\s+", " ", (text or "").strip())
+        title = re.sub(r"^[\-–—•]+\s*", "", title)
+        return title[:90].strip()
+
+    def _is_scanned_header_candidate(
+        self,
+        ldu: LogicalDocumentUnit,
+        page_top_min: dict[int, float],
+    ) -> bool:
+        if ldu.chunk_type != "paragraph":
+            return False
+        text = re.sub(r"\s+", " ", (ldu.content or "").strip())
+        if not text or len(text) > 90 or "|" in text:
+            return False
+        if text.endswith((".", "?", "!", ";")):
+            return False
+
+        tokens = re.findall(r"[\w\u1200-\u137F]+", text, flags=re.UNICODE)
+        if len(tokens) < 1 or len(tokens) > 10:
+            return False
+
+        page_num = None
+        y0 = None
+        if ldu.page_refs:
+            ref0 = ldu.page_refs[0]
+            page_num = ref0.page_number
+            if ref0.bbox is not None and len(ref0.bbox) == 4:
+                y0 = float(ref0.bbox[1])
+
+        near_top = True
+        if page_num is not None and y0 is not None and page_num in page_top_min:
+            near_top = y0 <= (page_top_min[page_num] + 120.0)
+
+        if not near_top:
+            return False
+
+        if NUMBERED_HEADER_RE.match(text):
+            return True
+
+        upper_ratio = self._uppercase_ratio(text)
+        if upper_ratio >= 0.65:
+            return True
+
+        title_ratio = self._title_case_ratio(text)
+        if title_ratio >= 0.70 and len(tokens) <= 8:
+            return True
+
+        ethiopic_chars = len(re.findall(r"[\u1200-\u137F]", text))
+        letters = sum(1 for ch in text if ch.isalpha())
+        if letters > 0 and (ethiopic_chars / letters) >= 0.65 and len(tokens) <= 8:
+            return True
+
+        return False
+
+    def _inject_scanned_sections(self, ldus: list[LogicalDocumentUnit]) -> list[LogicalDocumentUnit]:
+        if not ldus:
+            return ldus
+
+        no_section_count = sum(1 for ldu in ldus if not ldu.parent_section_path)
+        if (no_section_count / max(len(ldus), 1)) < 0.80:
+            return ldus
+
+        page_top_min: dict[int, float] = {}
+        for ldu in ldus:
+            if not ldu.page_refs:
+                continue
+            ref0 = ldu.page_refs[0]
+            if ref0.page_number is None or ref0.bbox is None:
+                continue
+            y0 = float(ref0.bbox[1])
+            existing = page_top_min.get(ref0.page_number)
+            if existing is None or y0 < existing:
+                page_top_min[ref0.page_number] = y0
+
+        assigned: list[LogicalDocumentUnit] = []
+        header_titles: list[str] = []
+        counts: dict[str, int] = {}
+        current_section: str | None = None
+
+        for ldu in ldus:
+            ldu_copy = ldu.model_copy(deep=True)
+            if self._is_scanned_header_candidate(ldu_copy, page_top_min):
+                base = self._sanitize_section_title(ldu_copy.content or "")
+                if base:
+                    seen = counts.get(base, 0) + 1
+                    counts[base] = seen
+                    current_section = base if seen == 1 else f"{base} ({seen})"
+                    header_titles.append(current_section)
+
+            if current_section and not ldu_copy.parent_section_path:
+                ldu_copy.parent_section_path = [current_section]
+                ldu_copy.parent_section = current_section
+
+            assigned.append(ldu_copy)
+
+        if len(set(header_titles)) >= 2:
+            return assigned
+        return ldus
+
     def _build_section(
         self,
         doc_id: str,
@@ -182,6 +297,7 @@ class PageIndexBuilder:
         started = time.perf_counter()
         logger.info("stage=pageindex start doc=%s", doc_name)
         summary_cache = self._load_summary_cache()
+        ldus = self._inject_scanned_sections(ldus)
 
         nodes: dict[tuple[str, ...], _NodeState] = {}
 
