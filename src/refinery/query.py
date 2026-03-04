@@ -7,7 +7,7 @@ from typing import Any, TypedDict
 from urllib import request
 
 from .facts import FactStore
-from .models import LogicalDocumentUnit, PageIndex, ProvenanceRef, QueryAnswer
+from .models import BBox, LogicalDocumentUnit, PageIndex, ProvenanceChain, ProvenanceRef, QueryAnswer
 from .pageindex import pageindex_navigate
 from .storage import ArtifactStore
 from .utils import normalize_text
@@ -65,7 +65,7 @@ class QueryAgent:
         return doc_id
 
     def _normalize_pref(self, pref: ProvenanceRef, fallback_doc_name: str) -> ProvenanceRef:
-        bbox = pref.bbox or (0.0, 0.0, 0.0, 0.0)
+        bbox = pref.bbox or BBox.model_validate((0.0, 0.0, 1.0, 1.0))
         page = pref.page_number if pref.page_number is not None else 1
         return pref.model_copy(update={"doc_name": pref.doc_name or fallback_doc_name, "page_number": page, "bbox": bbox})
 
@@ -79,7 +79,7 @@ class QueryAgent:
                 doc_name=doc_id,
                 ref_type="pdf_bbox",
                 page_number=1,
-                bbox=(0.0, 0.0, 0.0, 0.0),
+                bbox=BBox.model_validate((0.0, 0.0, 1.0, 1.0)),
                 content_hash="",
             )
         ]
@@ -99,14 +99,14 @@ class QueryAgent:
         doc_name = self._primary_doc_name(doc_id)
         for row in rows[:3]:
             bbox_text = str(row.get("bbox") or "").strip()
-            bbox = (0.0, 0.0, 0.0, 0.0)
+            bbox = BBox.model_validate((0.0, 0.0, 1.0, 1.0))
             if bbox_text:
                 parts = [p.strip() for p in bbox_text.split(",")]
                 if len(parts) == 4:
                     try:
-                        bbox = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
-                    except ValueError:
-                        bbox = (0.0, 0.0, 0.0, 0.0)
+                        bbox = BBox.model_validate((float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])))
+                    except Exception:
+                        bbox = BBox.model_validate((0.0, 0.0, 1.0, 1.0))
 
             section_path = [s for s in str(row.get("section_path") or "").split(">") if s]
             line_range = None
@@ -590,16 +590,20 @@ class QueryAgent:
     def query(self, doc_id: str, question: str) -> QueryAnswer:
         out = self.query_interface(doc_id, question)
         prov = [ProvenanceRef.model_validate(p) for p in out.get("provenance_chain", [])]
-        return QueryAnswer(answer=out["answer"], provenance_chain=prov, confidence=float(out.get("confidence", 0.2)))
+        return QueryAnswer(
+            answer=out["answer"],
+            provenance_chain=ProvenanceChain.from_refs(prov) if prov else ProvenanceChain.from_refs(self._fallback_provenance(doc_id)),
+            confidence=float(out.get("confidence", 0.2)),
+        )
 
     def audit_claim(self, doc_id: str, claim: str) -> dict:
         result = self.query(doc_id, claim)
-        status = "VERIFIED" if result.provenance_chain else "NOT FOUND / UNVERIFIABLE"
+        status = "VERIFIED" if result.provenance_chain.steps else "NOT FOUND / UNVERIFIABLE"
         return {
             "status": status,
             "claim": claim,
             "answer": result.answer,
-            "provenance_chain": [p.model_dump() for p in result.provenance_chain],
+            "provenance_chain": [p.model_dump(mode="json") for p in result.provenance_chain.steps],
         }
 
     def navigate(self, doc_id: str, topic: str) -> list[dict]:

@@ -1,13 +1,19 @@
 from pathlib import Path
 
 from refinery.config import Settings
-from refinery.models import LogicalDocumentUnit, ProvenanceRef
+from refinery.models import BBox, LogicalDocumentUnit, ProvenanceRef
 from refinery.pageindex import PageIndexBuilder
 from refinery.storage import ArtifactStore
 
 
 def _pref(page: int, bbox: tuple[float, float, float, float]) -> ProvenanceRef:
-    return ProvenanceRef(doc_name="scan.pdf", ref_type="pdf_bbox", page_number=page, bbox=bbox, content_hash="h")
+    return ProvenanceRef(
+        doc_name="scan.pdf",
+        ref_type="pdf_bbox",
+        page_number=page,
+        bbox=BBox.model_validate(bbox),
+        content_hash="h",
+    )
 
 
 def _ldu(ldu_id: str, content: str, page: int, bbox: tuple[float, float, float, float]) -> LogicalDocumentUnit:
