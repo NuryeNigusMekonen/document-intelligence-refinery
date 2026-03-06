@@ -28,4 +28,4 @@ reports/*png
 =2.16.0
 .env
 .env.*
-!reports/final_qa_provenance_examples.json
+!reports/final_qa_provenance_examples.jsonrubric/
