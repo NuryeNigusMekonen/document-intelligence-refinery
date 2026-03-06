@@ -78,6 +78,6 @@ class ImageAdapter:
                 blocks=[TextBlock(text=fallback_text, bbox=(0.0, 0.0, 1000.0, 1000.0), reading_order=0, confidence=0.2, provenance=prov)],
                 tables=[],
                 figures=[],
-                unresolved_needs_vision=not (self.settings.enable_vision and self.settings.openrouter_api_key),
+                unresolved_needs_vision=True,
             )
             return ExtractedDocument(doc_id=doc_id, doc_name=file_path.name, pages=[page]), 0.2, low_note

@@ -261,13 +261,8 @@ def test_router_uses_registered_layout_engine(tmp_path: Path):
     assert ledger[-1]["strategy_used"] == "custom_layout"
 
 
-def test_vision_uses_registered_vlm_provider(tmp_path: Path):
-    settings = Settings(
-        workspace_root=tmp_path,
-        use_openrouter_vlm=True,
-        openrouter_api_key="dummy",
-        vlm_provider="custom_vlm",
-    )
+def test_vision_returns_local_result_when_unresolved(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path)
     store = ArtifactStore(settings)
     router = ExtractionRouter(settings, store)
 
@@ -277,15 +272,14 @@ def test_vision_uses_registered_vlm_provider(tmp_path: Path):
         pages=[ExtractedPage(page_number=1, width=100, height=100, unresolved_needs_vision=True)],
     )
     router.vision._run_local_strategy_c = lambda pdf_path, profile: (unresolved_doc, 0.40, 0.0, "local low")
-    router.vision.register_vlm_provider("custom_vlm", lambda pdf_path, profile: (_doc(), 0.91, 0.15, "custom vlm"))
 
     result_doc, result_conf, _result_cost, result_notes = router.vision.extract(
         Path("dummy.pdf"),
         _profile("needs_vision_model", origin="scanned_image", layout="figure_heavy"),
     )
     assert result_doc.doc_id == "doc_x"
-    assert result_conf == 0.91
-    assert result_notes == "custom vlm"
+    assert result_conf == 0.40
+    assert result_notes == "local low"
 
 
 def test_router_blocks_vision_escalation_when_budget_headroom_low(tmp_path: Path):

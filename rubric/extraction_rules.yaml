@@ -1,0 +1,132 @@
+triage:
+  # Keywords that drive domain classification in triage and policy risk boosting.
+  # Add a new domain list here to onboard domain-specific routing behavior.
+  domain_keywords:
+    financial:
+      - balance
+      - income
+      - financial
+      - earnings
+      - assets
+      - revenue
+      - expense
+    legal:
+      - contract
+      - agreement
+      - terms
+      - legal
+      - whereas
+      - party
+      - liability
+    technical:
+      - manual
+      - spec
+      - api
+      - technical
+      - architecture
+      - endpoint
+      - algorithm
+    medical:
+      - clinical
+      - patient
+      - medical
+      - diagnosis
+      - treatment
+      - prescription
+
+extraction:
+  # Phase 0 empirical fast-path gates:
+  # - meaningful character stream per page
+  # - image area not dominant on page
+  fast_min_chars_per_page: 100
+  fast_max_image_area_ratio: 0.50
+  fast_confidence_floor: 0.60
+  layout_confidence_floor: 0.72
+  escalate_to_vision_floor: 0.50
+  # Heuristic handwriting trigger for direct vision escalation
+  handwriting_whitespace_threshold: 0.92
+  handwriting_char_density_threshold: 0.00005
+  handwriting_image_ratio_threshold: 0.55
+
+chunking:
+  # Hard cap per LDU. If exceeded, paragraph/list splitting is applied.
+  max_tokens: 350
+  # true => split list chunks only at list-item boundaries; false => allow generic line splits.
+  list_split_item_boundary_only: true
+  # Regex used to recognize section headings.
+  heading_regex: '^(\d+(\.\d+)*)\s+.+|^[A-Z][A-Za-z\s]{3,60}$'
+  # Regex used to classify a block as a list.
+  list_item_regex: '^\s*(\d+\.|[-*])\s+'
+  # Regex used to tag cross-reference relationships on chunks.
+  cross_ref_regex: 'see\s+(table|figure|section)\s+\d+'
+  # Regex used to resolve references to concrete chunk ids.
+  resolvable_ref_regex: 'see\s+(table|figure|section)\s+(\d+)'
+  # If block overlaps a detected table above this ratio, suppress duplicate text block.
+  table_block_overlap_suppress_ratio: 0.60
+  # Preserve likely Amharic text near tables when at least this many Ethiopic characters are present.
+  table_block_suppress_ethiopic_min_chars: 3
+
+# Non-PDF routing profile map. Adjust these to retune origin/layout/cost behavior without code changes.
+file_type_profiles:
+  image:
+    origin_type: scanned_image
+    layout_complexity: figure_heavy
+    estimated_extraction_cost: needs_vision_model
+    origin_confidence: 0.88
+    layout_confidence: 0.75
+    extraction_cost_confidence: 0.90
+    domain_hint: general
+    domain_confidence: 0.55
+  excel:
+    origin_type: native_digital
+    layout_complexity: table_heavy
+    estimated_extraction_cost: needs_layout_model
+    origin_confidence: 0.85
+    layout_confidence: 0.85
+    extraction_cost_confidence: 0.80
+    domain_hint: general
+    domain_confidence: 0.55
+  docx:
+    origin_type: native_digital
+    layout_complexity: mixed
+    estimated_extraction_cost: fast_text_sufficient
+    origin_confidence: 0.80
+    layout_confidence: 0.72
+    extraction_cost_confidence: 0.75
+    domain_hint: general
+    domain_confidence: 0.55
+  markdown:
+    origin_type: native_digital
+    layout_complexity: mixed
+    estimated_extraction_cost: fast_text_sufficient
+    origin_confidence: 0.82
+    layout_confidence: 0.72
+    extraction_cost_confidence: 0.75
+    domain_hint: general
+    domain_confidence: 0.55
+  default:
+    origin_type: mixed
+    layout_complexity: mixed
+    estimated_extraction_cost: needs_layout_model
+    origin_confidence: 0.72
+    layout_confidence: 0.70
+    extraction_cost_confidence: 0.70
+    domain_hint: general
+    domain_confidence: 0.55
+
+facts:
+  # English financial keys used to extract metric/value pairs from free text.
+  financial_keys:
+    - Revenue
+    - Net profit
+    - Total assets
+    - Operating income
+    - EPS
+  # Maximum characters scanned between a matched key and its numeric value.
+  context_window_chars: 60
+  # Enable/disable year extraction pattern in the fact store.
+  include_year_pattern: true
+  # Regex used when include_year_pattern=true.
+  year_regex: '\b(FY\s?\d{2,4}|\d{4})\b'
+  # File path containing Amharic keyword mappings (relative to workspace root or absolute).
+  amharic_keywords_file: src/refinery/resources/amharic_keywords.yaml

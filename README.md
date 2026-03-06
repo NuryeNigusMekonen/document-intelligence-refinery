@@ -269,19 +269,9 @@ export REFINERY_MULTILINGUAL_EMBEDDINGS=true
 export REFINERY_EMBEDDING_MODEL=multilingual-lexical
 
 # Strategy C (Vision) behavior
-# Local-first by default; OpenRouter is opt-in only.
-export REFINERY_USE_OPENROUTER_VLM=false
-export REFINERY_VLM_PROVIDER=openrouter
+# Local-only OCR/Docling strategy.
 export REFINERY_LAYOUT_ENGINE=default
-export REFINERY_VLM_MODEL_LOW_COST=openai/gpt-4o-mini
-export REFINERY_VLM_MODEL_HIGH_QUALITY=google/gemini-2.0-flash-001
-export REFINERY_VLM_LOW_BUDGET_CAP_USD=1.0
-export REFINERY_VLM_LOW_COST_PAGE_COST_ESTIMATE=0.08
-export REFINERY_VLM_HIGH_QUALITY_PAGE_COST_ESTIMATE=0.12
-export REFINERY_VLM_REQUEST_TIMEOUT_SECONDS=60
 export REFINERY_RUNTIME_RULES_FILE=extraction_rules.yaml
-# Only needed if REFINERY_USE_OPENROUTER_VLM=true
-export REFINERY_OPENROUTER_API_KEY=your_key_here
 
 # Stage 5 Query Agent (LangGraph)
 export REFINERY_QUERY_USE_LANGGRAPH=true
@@ -292,16 +282,12 @@ export REFINERY_QUERY_SEMANTIC_TOP_K=5
 
 Extraction internals expose pluggable hooks while preserving normalized output schema (`ExtractedDocument`, bounded confidence fields, provenance guarantees):
 
-- VLM providers:
-	- Register with `VisionExtractor.register_vlm_provider(name, provider_fn)`
-	- Select at runtime with `REFINERY_VLM_PROVIDER`
-	- Provider contract: `(pdf_path, profile) -> (ExtractedDocument, confidence, cost, notes) | None`
 - Layout engines:
 	- Register with `ExtractionRouter.register_layout_engine(name, engine_fn)`
 	- Select at runtime with `REFINERY_LAYOUT_ENGINE`
 	- Engine contract: `(pdf_path, profile) -> (ExtractedDocument, confidence, cost, notes, strategy_name)`
 
-Default behavior remains unchanged (`openrouter` provider, `default` layout engine).
+Default behavior remains unchanged (`default` layout engine).
 
 Install LangGraph support:
 

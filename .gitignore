@@ -18,8 +18,14 @@ data/*.pdf
 !data/sample_multi.md
 !data/sample_multi.png
 !data/sample_multi.xlsx
-reports/
+reports/*docx
+reports/*pdf
+reports/*xlsx
+reports/*txt
+reports/*svg
+reports/*png
 .langgraph_api/
 =2.16.0
 .env
 .env.*
+!reports/final_qa_provenance_examples.json

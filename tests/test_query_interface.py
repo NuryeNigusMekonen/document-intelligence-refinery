@@ -81,6 +81,38 @@ def _make_table_agent(tmp_path: Path, doc_id: str = "doc_t") -> QueryAgent:
     return QueryAgent(store, vector, facts)
 
 
+def _make_multisection_agent(tmp_path: Path, doc_id: str = "doc_m") -> QueryAgent:
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    ldus = [
+        LogicalDocumentUnit(
+            ldu_id="ldu_capex",
+            chunk_type="paragraph",
+            content="Capital expenditure projections for Q3 increase to 120 million.",
+            token_count=10,
+            parent_section_path=["Financials", "CapEx"],
+            parent_section="Financials > CapEx",
+            page_refs=[ProvenanceRef(doc_name="sample.pdf", ref_type="pdf_bbox", page_number=4, bbox=(10, 20, 200, 220), content_hash="h-capex")],
+            content_hash="h-capex",
+        ),
+        LogicalDocumentUnit(
+            ldu_id="ldu_revenue",
+            chunk_type="paragraph",
+            content="Revenue outlook for Q3 remains stable at 70 million.",
+            token_count=10,
+            parent_section_path=["Financials", "Revenue"],
+            parent_section="Financials > Revenue",
+            page_refs=[ProvenanceRef(doc_name="sample.pdf", ref_type="pdf_bbox", page_number=3, bbox=(10, 20, 200, 220), content_hash="h-revenue")],
+            content_hash="h-revenue",
+        ),
+    ]
+    store.write_jsonl(store.chunks_dir / f"{doc_id}.jsonl", [ldu.model_dump(mode="json") for ldu in ldus])
+    _seed_pageindex(store, doc_id)
+    vector = VectorIndex(store)
+    facts = FactStore(store.db_dir / "facts.db")
+    return QueryAgent(store, vector, facts)
+
+
 def _assert_provenance_fields(result: dict) -> None:
     prov = result.get("provenance_chain", [])
     assert prov, "provenance must be present"
@@ -179,3 +211,79 @@ def test_query_interface_ollama_empty_context_keeps_refusal(tmp_path: Path, monk
     out = agent.query_interface("doc_e", "What is Q3 budget?")
     assert out["answer"] == refusal
     _assert_provenance_fields(out)
+
+
+def test_query_interface_navigational_scopes_semantic_retrieval(tmp_path: Path, monkeypatch):
+    agent = _make_multisection_agent(tmp_path)
+
+    def _fail_global_semantic(*_args, **_kwargs):
+        raise AssertionError("global semantic_search_tool should not be used when scoped candidates exist")
+
+    monkeypatch.setattr(agent, "semantic_search_tool", _fail_global_semantic)
+
+    out = agent.query_interface("doc_m", "What are the capital expenditure projections for Q3?")
+    answer = str(out.get("answer") or "")
+    assert "capital expenditure" in answer.lower()
+    assert "revenue outlook" not in answer.lower()
+    assert "pageindex_navigate" in out.get("tool_trace", [])
+    assert "semantic_search" in out.get("tool_trace", [])
+    _assert_provenance_fields(out)
+
+
+def test_query_interface_navigational_falls_back_when_scoped_empty(tmp_path: Path, monkeypatch):
+    agent = _make_agent(tmp_path, doc_id="doc_f")
+    called = {"semantic": False}
+
+    monkeypatch.setattr(
+        agent,
+        "pageindex_navigate_tool",
+        lambda *_args, **_kwargs: [{"title": "UnrelatedSection", "summary": "", "child_sections": []}],
+    )
+
+    original_semantic = agent.semantic_search_tool
+
+    def _wrapped_semantic(*args, **kwargs):
+        called["semantic"] = True
+        return original_semantic(*args, **kwargs)
+
+    monkeypatch.setattr(agent, "semantic_search_tool", _wrapped_semantic)
+
+    out = agent.query_interface("doc_f", "What are the capital expenditure projections for Q3?")
+    assert called["semantic"] is True
+    assert "semantic_search" in out.get("tool_trace", [])
+    _assert_provenance_fields(out)
+
+
+def test_query_interface_navigation_debug_opt_in(tmp_path: Path):
+    agent = _make_multisection_agent(tmp_path)
+
+    default_out = agent.query_interface("doc_m", "What are the capital expenditure projections for Q3?")
+    assert "navigation_sections" not in default_out
+    assert "used_section_scope" not in default_out
+
+    debug_out = agent.query_interface(
+        "doc_m",
+        "What are the capital expenditure projections for Q3?",
+        include_navigation_debug=True,
+    )
+    assert "navigation_sections" in debug_out
+    assert "used_section_scope" in debug_out
+    assert "CapEx" in debug_out.get("navigation_sections", [])
+    assert debug_out.get("used_section_scope") is True
+
+
+def test_measure_retrieval_precision_with_and_without_pageindex(tmp_path: Path):
+    agent = _make_multisection_agent(tmp_path, doc_id="doc_precision")
+    metrics = agent.measure_retrieval_precision(
+        doc_id="doc_precision",
+        topic="capital expenditure projections for Q3",
+        expected_sections=["CapEx"],
+        top_k=3,
+    )
+
+    assert metrics["top_k"] == 3
+    assert "with_pageindex" in metrics
+    assert "without_pageindex" in metrics
+    assert "precision_at_k" in metrics["with_pageindex"]
+    assert "precision_at_k" in metrics["without_pageindex"]
+    assert metrics["with_pageindex"]["precision_at_k"] >= metrics["without_pageindex"]["precision_at_k"]

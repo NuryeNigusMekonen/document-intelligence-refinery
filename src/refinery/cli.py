@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     qiface = sub.add_parser("query-interface")
     qiface.add_argument("--doc", required=True)
+    qiface.add_argument("--debug-sections", action="store_true", help="Include PageIndex section selection/debug metadata")
     qiface.add_argument("question")
 
     audit = sub.add_parser("audit")
@@ -54,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show-pageindex")
     show.add_argument("--doc", required=True)
     show.add_argument("--topic", default="")
+    show.add_argument("--top-k", type=int, default=3)
+
+    eval_pageindex = sub.add_parser("eval-pageindex")
+    eval_pageindex.add_argument("--doc", required=True)
+    eval_pageindex.add_argument("--topic", required=True)
+    eval_pageindex.add_argument("--expected", required=True, help="Comma-separated expected section titles")
+    eval_pageindex.add_argument("--top-k", type=int, default=3)
 
     citation = sub.add_parser("open-citation")
     citation.add_argument("--doc", required=True)
@@ -95,7 +103,7 @@ def main() -> None:
         return
 
     if args.command == "query-interface":
-        out = agent.query_interface(doc_id, args.question)
+        out = agent.query_interface(doc_id, args.question, include_navigation_debug=bool(args.debug_sections))
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
@@ -105,8 +113,19 @@ def main() -> None:
         return
 
     if args.command == "show-pageindex":
-        nodes = agent.navigate(doc_id, args.topic)
+        nodes = agent.navigate(doc_id, args.topic, top_k=max(int(args.top_k), 1))
         print(json.dumps(nodes, indent=2, ensure_ascii=False))
+        return
+
+    if args.command == "eval-pageindex":
+        expected_sections = [s.strip() for s in str(args.expected).split(",") if s.strip()]
+        out = agent.measure_retrieval_precision(
+            doc_id=doc_id,
+            topic=str(args.topic),
+            expected_sections=expected_sections,
+            top_k=max(int(args.top_k), 1),
+        )
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
     if args.command == "open-citation":

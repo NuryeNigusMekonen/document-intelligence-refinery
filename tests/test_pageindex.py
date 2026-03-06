@@ -73,3 +73,19 @@ def test_pageindex_fallback_when_ollama_disabled(tmp_path: Path):
     sentence_count = len([s for s in SENTENCE_RE.findall(capex.summary) if s.strip()])
     assert capex.summary.strip()
     assert 2 <= sentence_count <= 3
+
+
+def test_pageindex_navigate_defaults_to_top3(tmp_path: Path):
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    builder = PageIndexBuilder(store)
+
+    ldus = [
+        _ldu("p1", "paragraph", "capital expenditure projections", ["Financials", "CapEx"], 1),
+        _ldu("p2", "paragraph", "revenue outlook", ["Financials", "Revenue"], 2),
+        _ldu("p3", "paragraph", "operations summary", ["Operations"], 3),
+        _ldu("p4", "paragraph", "risk and compliance", ["Risk"], 4),
+    ]
+    idx = builder.build("doc4", "x.pdf", ldus)
+    hits = pageindex_navigate(idx, "financial projections")
+    assert len(hits) <= 3
