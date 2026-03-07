@@ -20,7 +20,7 @@ for f in data/*.{pdf,docx,md,png,jpg,jpeg,xlsx}; do
         # Stage 4: PageIndex build
         python -m src.refinery.cli build-index "$f"
         # Stage 5: Query Interface Agent (example query)
-        python -m src.refinery.cli query-interface --doc "$f" "What is the document about?"
+        #python -m src.refinery.cli query-interface --doc "$f" "What is the document about?"
     fi
 done
 

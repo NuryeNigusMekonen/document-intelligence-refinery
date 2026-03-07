@@ -1,29 +1,64 @@
 {
-  "question": "What is net profit?",
-  "answer": "No high-confidence match found.",
+  "question": "When is ANNUAL ORDINARY GENERAL MEETING OF SHAREHOLDERS?",
+  "answer": "30 June 2023",
   "provenance_chain": [
     {
-      "doc_name": "doc_f2ee3f86adaa892f",
+      "doc_name": "Annual_Report_JUNE-2023.pdf",
       "ref_type": "pdf_bbox",
-      "page_number": 1,
+      "page_number": 16,
       "bbox": [
         0.0,
-        0.0,
-        1.0,
-        1.0
+        320.0,
+        581.1019897460938,
+        348.0
       ],
-      "section_path": null,
+      "section_path": [
+        "1.4 Billion;"
+      ],
       "line_range": null,
       "sheet_name": null,
       "cell_range": null,
-      "content_hash": ""
+      "content_hash": "dae5f8f6bc4e5ed191fff80001ae2337903c19026f94b3aeff82ecd22ca0b82e"
+    },
+    {
+      "doc_name": "Annual_Report_JUNE-2023.pdf",
+      "ref_type": "pdf_bbox",
+      "page_number": 21,
+      "bbox": [
+        0.0,
+        416.0,
+        581.1019897460938,
+        444.0
+      ],
+      "section_path": [
+        "1.4 Billion;"
+      ],
+      "line_range": null,
+      "sheet_name": null,
+      "cell_range": null,
+      "content_hash": "860abe227b35c149abe458706f2f850bf8dff6795fa7ea52eb5c5a0422d0d8c0"
+    },
+    {
+      "doc_name": "Annual_Report_JUNE-2023.pdf",
+      "ref_type": "pdf_bbox",
+      "page_number": 60,
+      "bbox": [
+        0.0,
+        128.0,
+        581.1019897460938,
+        156.0
+      ],
+      "section_path": [
+        "1.4 Billion;"
+      ],
+      "line_range": null,
+      "sheet_name": null,
+      "cell_range": null,
+      "content_hash": "ac6d92691c80f7b581d494b3325fae59fd1f4341be0f4f77cfc1c8aea2dcacfe"
     }
   ],
-  "confidence": 0.2,
+  "confidence": 0.72,
   "tool_trace": [
-    "semantic_search",
-    "structured_query"
-  ],
-  "navigation_sections": [],
-  "used_section_scope": false
+    "semantic_search"
+  ]
 }

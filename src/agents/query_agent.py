@@ -359,6 +359,105 @@ class QueryAgent:
         q = question.lower()
         return any(k in q for k in ["section", "where in", "capital expenditure", "capex", "projections", "table", "figure"])
 
+    def _looks_temporal_question(self, question: str) -> bool:
+        """Heuristic to detect 'when' / date-seeking questions.
+
+        This is intentionally simple and fast: it is used only to
+        trigger light-weight validation on the composed answer text.
+        """
+        q = normalize_text(question or "").strip().lower()
+        if not q:
+            return False
+        if q.startswith("when ") or q.startswith("when is") or q.startswith("when was"):
+            return True
+        # Also catch variants like "what is the date of" / "on which date"
+        temporal_markers = [
+            "date of",
+            "on which date",
+            "what date",
+            "which year",
+        ]
+        return any(marker in q for marker in temporal_markers)
+
+    def _extract_date_from_text(self, text: str) -> str | None:
+        """Extract a plausible date substring from answer/context text.
+
+        We intentionally keep this conservative so that we only adjust
+        answers when we see a clear date pattern.
+        """
+        t = normalize_text(text or "")
+        if not t:
+            return None
+
+        # Common formats: "12 June 2023", "12th June 2023", "June 12, 2023", "June 12, 2023 G.C." etc.
+        # NOTE: normalize_text() may lowercase the input, so we always
+        # use case-insensitive matching.
+        patterns = [
+            # 12 June 2023 / 12th June 2023
+            r"\b\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]+\s+\d{4}\b",
+            # June 12, 2023 / June 12th, 2023 / June 12, 2023 G.C.
+            r"\b[a-zA-Z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}(?:\s+g\.?c\.?)?\b",
+            # 2023-06-12
+            r"\b\d{4}-\d{2}-\d{2}\b",
+            # 12/06/2023 or 12/06/23
+            r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+        ]
+        for pat in patterns:
+            m = re.search(pat, t, flags=re.IGNORECASE)
+            if m:
+                return m.group(0)
+        return None
+
+    def _extract_date_from_related_sections(self, doc_id: str, hits: list[LogicalDocumentUnit]) -> str | None:
+        """Search all LDUs in the same logical sections as the hits for a date.
+
+        This handles cases where retrieval surfaces a heading like
+        "ANNUAL ORDINARY GENERAL MEETING OF SHAREHOLDERS" but the actual
+        date appears in a nearby paragraph under the same section.
+        """
+        if not hits:
+            return None
+
+        # Collect normalized section labels from the current hits.
+        candidate_sections: set[str] = set()
+        for h in hits:
+            for seg in (h.parent_section_path or []):
+                key = normalize_text(str(seg) or "").strip()
+                if key:
+                    candidate_sections.add(key)
+            parent = normalize_text(h.parent_section or "").strip()
+            if parent:
+                candidate_sections.add(parent)
+
+        if not candidate_sections:
+            return None
+
+        # Scan all LDUs that belong to any of these sections and pool
+        # their text to look for a clear date expression.
+        ldus = self._load_ldus(doc_id)
+        buf_parts: list[str] = []
+        for ldu in ldus:
+            sec_keys: list[str] = []
+            for seg in (ldu.parent_section_path or []):
+                key = normalize_text(str(seg) or "").strip()
+                if key:
+                    sec_keys.append(key)
+            parent = normalize_text(ldu.parent_section or "").strip()
+            if parent:
+                sec_keys.append(parent)
+            if not sec_keys:
+                continue
+            if not any(key in candidate_sections for key in sec_keys):
+                continue
+            if ldu.content:
+                buf_parts.append(normalize_text(ldu.content))
+
+        if not buf_parts:
+            return None
+
+        big_text = " ".join(buf_parts)
+        return self._extract_date_from_text(big_text)
+
     def _tokenize_answer_text(self, text: str) -> list[str]:
         return [t.lower() for t in re.findall(r"\w+", text, flags=re.UNICODE)]
 
@@ -634,6 +733,21 @@ class QueryAgent:
         )
         if hits:
             answer_text = self._compose_answer_from_hits(hits, question)
+            # For temporal ("when") questions, try to ensure the answer
+            # actually contains a date. If it doesn't, scan the same
+            # hits' content for a plausible date and prefer that.
+            if self._looks_temporal_question(question):
+                if not self._extract_date_from_text(answer_text):
+                    # First search in immediate hit context
+                    combined_context = " \n".join(normalize_text(h.content or "") for h in hits[:5])
+                    date_snippet = self._extract_date_from_text(combined_context)
+                    if not date_snippet:
+                        # If still not found, search all LDUs within the
+                        # same logical sections as the hits (more expensive
+                        # but still bounded to this document).
+                        date_snippet = self._extract_date_from_related_sections(doc_id, hits)
+                    if date_snippet:
+                        answer_text = date_snippet
             if self._is_noisy_answer_text(answer_text):
                 tool_trace.append("structured_query")
                 rows = self.structured_query_tool(question, doc_id=doc_id)
@@ -759,6 +873,18 @@ class QueryAgent:
             hits = state.get("hits") or []
             if hits:
                 answer_text = self._compose_answer_from_hits(hits, question)
+                # For temporal ("when") questions in the langgraph path,
+                # also enforce that the answer contains a plausible date.
+                # If not, try to extract a date from the same hit context
+                # or from LDUs within the same logical sections.
+                if self._looks_temporal_question(question):
+                    if not self._extract_date_from_text(answer_text):
+                        combined_context = " \n".join(normalize_text(h.content or "") for h in hits[:5])
+                        date_snippet = self._extract_date_from_text(combined_context)
+                        if not date_snippet:
+                            date_snippet = self._extract_date_from_related_sections(doc_id, hits)
+                        if date_snippet:
+                            answer_text = date_snippet
                 if self._is_noisy_answer_text(answer_text):
                     rows = self.structured_query_tool(question, doc_id=doc_id)
                     if rows:
