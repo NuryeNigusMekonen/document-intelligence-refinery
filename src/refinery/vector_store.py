@@ -5,6 +5,8 @@ import re
 from collections import Counter
 from math import sqrt
 
+
+from typing import Any, Mapping, Sequence, cast
 from .config import Settings
 from .models import LogicalDocumentUnit
 from .storage import ArtifactStore
@@ -41,7 +43,7 @@ class VectorIndex:
         self._fallback_docs: dict[str, list[LogicalDocumentUnit]] = {}
         self._docs_by_id: dict[str, dict[str, LogicalDocumentUnit]] = {}
         self._chroma_client = None
-        self._collections: dict[str, object] = {}
+        self._collections: dict[str, Any] = {}
         try:
             import chromadb
 
@@ -65,7 +67,8 @@ class VectorIndex:
             collection = self._chroma_client.get_or_create_collection(name=f"doc_{doc_id}")
             ids: list[str] = []
             docs: list[str] = []
-            metadatas: list[dict[str, str]] = []
+            # Build into a concrete list first; later cast to the covariant Sequence[Mapping[...]]
+            metadatas_list: list[dict[str, str]] = []
             seen_ids: dict[str, int] = {}
             for ldu in ldus:
                 text = (ldu.content or str(ldu.structured_payload or "")).strip()
@@ -77,18 +80,20 @@ class VectorIndex:
                 chroma_id = base_id if count == 0 else f"{base_id}__dup{count}"
                 ids.append(chroma_id)
                 docs.append(text)
-                metadatas.append(
+                metadatas_list.append(
                     {
-                        "doc_id": doc_id,
-                        "chunk_type": ldu.chunk_type,
-                        "content_hash": ldu.content_hash,
-                        "parent_section": ldu.parent_section or "",
+                        "doc_id": str(doc_id),
+                        "chunk_type": str(ldu.chunk_type),
+                        "content_hash": str(ldu.content_hash),
+                        "parent_section": str(ldu.parent_section or ""),
                         "ldu_id": base_id,
                     }
                 )
 
             if ids:
-                collection.upsert(ids=ids, documents=docs, metadatas=metadatas)
+                # Chroma type stubs vary across versions; our dict[str, str] values conform to MetadataValue.
+                # Suppress the checker variance issue here; runtime API accepts this shape.
+                collection.upsert(ids=ids, documents=docs, metadatas=metadatas_list)  # type: ignore[arg-type]
             self._collections[doc_id] = collection
         except Exception as e:
             logger.warning("chroma upsert failed for doc=%s, using lexical fallback: %s", doc_id, e)

@@ -18,6 +18,7 @@ class ArtifactStore:
         self.db_dir = self.root / "db"
         self.vector_dir = self.root / "vector"
         self.ledger_file = self.root / "extraction_ledger.jsonl"
+        self.query_history_file = self.root / "query_history.jsonl"
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -25,6 +26,8 @@ class ArtifactStore:
             d.mkdir(parents=True, exist_ok=True)
         if not self.ledger_file.exists():
             self.ledger_file.touch()
+        if not self.query_history_file.exists():
+            self.query_history_file.touch()
 
     def save_json(self, path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

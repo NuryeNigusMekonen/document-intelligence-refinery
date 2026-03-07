@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     workspace_root: Path = Field(default=Path.cwd())
     artifacts_dir: Path = Field(default=Path(".refinery"))
-    runtime_rules_file: Path = Field(default=Path("extraction_rules.yaml"))
+    runtime_rules_file: Path = Field(default=Path("rubric/extraction_rules.yaml"))
     max_cost_per_doc: float = Field(default=2.5)
     enable_vision: bool = Field(default=False)
     layout_engine: str = Field(default="default")

@@ -5,6 +5,7 @@ import glob
 import json
 import logging
 from pathlib import Path
+from datetime import datetime
 
 from .config import Settings
 from .facts import FactStore
@@ -47,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     qiface.add_argument("--doc", required=True)
     qiface.add_argument("--debug-sections", action="store_true", help="Include PageIndex section selection/debug metadata")
     qiface.add_argument("question")
+    qiface.add_argument("--output", type=str, default=None, help="Optional path to save the output JSON result.")
 
     audit = sub.add_parser("audit")
     audit.add_argument("--doc", required=True)
@@ -99,12 +101,54 @@ def main() -> None:
 
     if args.command == "query":
         ans = agent.query(doc_id, args.question)
+        # Append to query history
+        try:
+            record = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "command": "query",
+                "doc_id": doc_id,
+                "question": args.question,
+                "result": ans.model_dump(mode="json"),
+            }
+            store.append_jsonl(store.query_history_file, record)
+        except Exception:
+            pass
         print(json.dumps(ans.model_dump(mode="json"), indent=2, ensure_ascii=False))
         return
 
     if args.command == "query-interface":
         out = agent.query_interface(doc_id, args.question, include_navigation_debug=bool(args.debug_sections))
-        print(json.dumps(out, indent=2, ensure_ascii=False))
+        # Always include the question in the output
+        out_with_question = {"question": args.question, **out}
+        # Append to query history (artifacts/query_history.jsonl)
+        try:
+            # Attempt to include doc_name from profile if available
+            doc_name: str | None = None
+            prof_path = store.profiles_dir / f"{doc_id}.json"
+            if prof_path.exists():
+                try:
+                    prof_data = json.loads(prof_path.read_text(encoding="utf-8"))
+                    doc_name = str(prof_data.get("doc_name")) if prof_data.get("doc_name") else None
+                except Exception:
+                    doc_name = None
+            record = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "command": "query-interface",
+                "doc_id": doc_id,
+                "doc_name": doc_name,
+                "question": args.question,
+                "result": out_with_question,
+            }
+            store.append_jsonl(store.query_history_file, record)
+        except Exception:
+            pass
+        output_json = json.dumps(out_with_question, indent=2, ensure_ascii=False)
+        if getattr(args, "output", None):
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output_json)
+            print(f"Output saved to {args.output}")
+        else:
+            print(output_json)
         return
 
     if args.command == "audit":
