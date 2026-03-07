@@ -277,6 +277,16 @@ export REFINERY_RUNTIME_RULES_FILE=extraction_rules.yaml
 export REFINERY_QUERY_USE_LANGGRAPH=true
 export REFINERY_QUERY_SEMANTIC_TOP_K=5
 ```
+### cpu and gpu usage 
+Stage CPU/GPU Map
+
+Stage 1 Triage (triage.py): CPU (pdfplumber, fitz, heuristics).
+Stage 2A Fast Text (extraction.py): CPU.
+Stage 2B Layout (Docling adapter) (__init__.py, extraction.py): Mostly CPU now, can be GPU-capable depending on Docling internals/env.
+Stage 2C Vision local OCR (extraction.py:679): CPU now (Tesseract path).
+Stage 3 Chunking (chunking.py): CPU.
+Stage 4 PageIndex build (pageindex.py): tree logic is CPU; optional Ollama summaries use GPU if Ollama model is GPU-loaded.
+Stage 5 Query agent (query.py, vector_store.py): retrieval/ranking is CPU; optional Ollama answer synthesis can use GPU.
 
 ### Extensibility hooks
 

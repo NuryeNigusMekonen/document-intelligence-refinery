@@ -13,7 +13,11 @@ htmlcov/
 .DS_Store
 data/*.pdf
 .refinery/*
+!.refinery/profiles/
+!.refinery/profiles/*
+!.refinery/extraction_ledger.jsonl
 !.refinery/.gitkeep
+!.refinery/query_history.jsonl
 !data/.gitkeep
 !data/sample_multi.md
 !data/sample_multi.png
@@ -29,4 +33,5 @@ reports/*png
 .env
 .env.*
 !reports/final_qa_provenance_examples.jsonrubric/
-rubric/
+.refinery copy/
+.refinery copy 2/
