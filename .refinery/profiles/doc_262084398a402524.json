@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_262084398a402524",
+  "doc_name": "Annual_Report_JUNE-2020.pdf",
+  "sha256": "2e348d6c3ee4d69cc9bff3dec355862d88066669d567dbfe4b4e48b0a2f414a5",
+  "origin_type": "native_digital",
+  "layout_complexity": "mixed",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.8
+  },
+  "domain_hint": "financial",
+  "estimated_extraction_cost": "needs_layout_model",
+  "origin_confidence": 0.72,
+  "layout_confidence": 0.78,
+  "domain_confidence": 0.85,
+  "extraction_cost_confidence": 0.76,
+  "page_count": 100,
+  "avg_char_density": 0.003961762572467879,
+  "image_area_ratio": 0.08822778372539442,
+  "whitespace_ratio": 0.0
+}

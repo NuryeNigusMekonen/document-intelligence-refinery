@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_23a0f7144db9947e",
+  "doc_name": "2022_Audited_Financial_Statement_Report.pdf",
+  "sha256": "3ed8f0ba7644343c5dc93cf72a89a06b7f90a4ab642f5bd865449abcb9edaf14",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.7994331065759638
+  },
+  "domain_hint": "general",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.88,
+  "layout_confidence": 0.75,
+  "domain_confidence": 0.2,
+  "extraction_cost_confidence": 0.9,
+  "page_count": 3,
+  "avg_char_density": 0.0,
+  "image_area_ratio": 1.0,
+  "whitespace_ratio": 1.0
+}

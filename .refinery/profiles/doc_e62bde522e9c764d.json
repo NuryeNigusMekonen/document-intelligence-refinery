@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_e62bde522e9c764d",
+  "doc_name": "2021_Audited_Financial_Statement_Report.pdf",
+  "sha256": "99ee3b8a9abdb4897ebea080f52161cc102f160f0e010eca209f28d48243cb6f",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.7995867768595042
+  },
+  "domain_hint": "general",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.88,
+  "layout_confidence": 0.75,
+  "domain_confidence": 0.2,
+  "extraction_cost_confidence": 0.9,
+  "page_count": 3,
+  "avg_char_density": 0.0,
+  "image_area_ratio": 1.0,
+  "whitespace_ratio": 1.0
+}

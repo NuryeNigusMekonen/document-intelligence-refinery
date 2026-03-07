@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_4510cef7a67e5476",
+  "doc_name": "20191010_Pharmaceutical-Manufacturing-Opportunites-in-Ethiopia_VF.pdf",
+  "sha256": "d0effa290ba25144ec6bd70009d086c319d39474f05afb15b4b5531fc05d3816",
+  "origin_type": "mixed",
+  "layout_complexity": "mixed",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.7999482936918305
+  },
+  "domain_hint": "legal",
+  "estimated_extraction_cost": "needs_layout_model",
+  "origin_confidence": 0.74,
+  "layout_confidence": 0.78,
+  "domain_confidence": 0.85,
+  "extraction_cost_confidence": 0.76,
+  "page_count": 15,
+  "avg_char_density": 0.0008354433029698324,
+  "image_area_ratio": 0.5085658034183873,
+  "whitespace_ratio": 0.4430377980201117
+}

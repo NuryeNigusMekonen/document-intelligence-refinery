@@ -1,0 +1,20 @@
+#!/bin/bash
+# Backup of original run_all_docs.sh
+# Clean run for all supported documents in data/
+
+set -e
+
+# Remove previous outputs
+echo "Removing .refinery directory..."
+rm -rf .refinery
+
+# Process all supported files in data/
+for f in data/*.{pdf,docx,md,png,jpg,jpeg,xlsx}; do
+    if [ -f "$f" ]; then
+        echo "Processing $f ..."
+        python -m src.refinery.cli ingest "$f"
+        python -m src.refinery.cli build-index "$f"
+    fi
+done
+
+echo "All documents processed."

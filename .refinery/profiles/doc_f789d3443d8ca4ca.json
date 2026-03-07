@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_f789d3443d8ca4ca",
+  "doc_name": "2018_Audited_Financial_Statement_Report.pdf",
+  "sha256": "70e44e10d0776e9c5632c878614e1aec5b7ccdd5c9daeead5eeccf6b28fbc826",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.8
+  },
+  "domain_hint": "general",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.88,
+  "layout_confidence": 0.75,
+  "domain_confidence": 0.2,
+  "extraction_cost_confidence": 0.9,
+  "page_count": 3,
+  "avg_char_density": 0.0,
+  "image_area_ratio": 1.0,
+  "whitespace_ratio": 1.0
+}

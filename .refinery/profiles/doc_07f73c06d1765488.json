@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_07f73c06d1765488",
+  "doc_name": "2013-E.C-Procurement-information.pdf",
+  "sha256": "4a67ebdf892c8fce342935b5e109795989d03cfd0602781fb2ea586b2c8c1ca1",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "am",
+    "confidence": 0.95521327014218
+  },
+  "domain_hint": "general",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.88,
+  "layout_confidence": 0.75,
+  "domain_confidence": 0.2,
+  "extraction_cost_confidence": 0.9,
+  "page_count": 3,
+  "avg_char_density": 0.0,
+  "image_area_ratio": 0.9999999953982673,
+  "whitespace_ratio": 1.0
+}

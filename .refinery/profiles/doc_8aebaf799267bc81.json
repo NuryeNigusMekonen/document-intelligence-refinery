@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_8aebaf799267bc81",
+  "doc_name": "Annual_Report_JUNE-2023.pdf",
+  "sha256": "c9ddc16ac77d590e2ac35f8885ccfe17921549b110b480059ba95df7f5529fd0",
+  "origin_type": "native_digital",
+  "layout_complexity": "mixed",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.7999628639334522
+  },
+  "domain_hint": "technical",
+  "estimated_extraction_cost": "needs_layout_model",
+  "origin_confidence": 0.72,
+  "layout_confidence": 0.78,
+  "domain_confidence": 0.82,
+  "extraction_cost_confidence": 0.76,
+  "page_count": 104,
+  "avg_char_density": 0.009278078837543896,
+  "image_area_ratio": 0.22990731963399083,
+  "whitespace_ratio": 0.0
+}

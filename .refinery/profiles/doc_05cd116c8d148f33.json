@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_05cd116c8d148f33",
+  "doc_name": "Annual_Report_JUNE-2021.pdf",
+  "sha256": "14ec0f8d1e51b57fec1e8e932adf58bbc3c105c9cf4262af9ebd3b0af687012e",
+  "origin_type": "native_digital",
+  "layout_complexity": "mixed",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.8
+  },
+  "domain_hint": "financial",
+  "estimated_extraction_cost": "needs_layout_model",
+  "origin_confidence": 0.72,
+  "layout_confidence": 0.78,
+  "domain_confidence": 0.85,
+  "extraction_cost_confidence": 0.76,
+  "page_count": 110,
+  "avg_char_density": 0.0038327316740483803,
+  "image_area_ratio": 0.10396129832174153,
+  "whitespace_ratio": 0.0
+}

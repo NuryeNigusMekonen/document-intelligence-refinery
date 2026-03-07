@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_7bc9d75ac27daec6",
+  "doc_name": "Audit Report - 2023.pdf",
+  "sha256": "62213e3af42b0198d66aa799a8b0df5eb9c6cc1473ff222b5268c72c8cd08ee0",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "en",
+    "confidence": 0.7996279761904762
+  },
+  "domain_hint": "financial",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.82,
+  "layout_confidence": 0.92,
+  "domain_confidence": 0.85,
+  "extraction_cost_confidence": 0.84,
+  "page_count": 95,
+  "avg_char_density": 2.542014988434324e-06,
+  "image_area_ratio": 0.9894790594069577,
+  "whitespace_ratio": 0.9983053233410438
+}

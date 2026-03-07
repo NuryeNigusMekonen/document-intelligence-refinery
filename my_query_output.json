@@ -1,0 +1,29 @@
+{
+  "question": "What is net profit?",
+  "answer": "No high-confidence match found.",
+  "provenance_chain": [
+    {
+      "doc_name": "doc_f2ee3f86adaa892f",
+      "ref_type": "pdf_bbox",
+      "page_number": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "section_path": null,
+      "line_range": null,
+      "sheet_name": null,
+      "cell_range": null,
+      "content_hash": ""
+    }
+  ],
+  "confidence": 0.2,
+  "tool_trace": [
+    "semantic_search",
+    "structured_query"
+  ],
+  "navigation_sections": [],
+  "used_section_scope": false
+}

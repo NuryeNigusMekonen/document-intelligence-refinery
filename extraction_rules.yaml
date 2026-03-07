@@ -50,7 +50,7 @@ extraction:
 
 chunking:
   # Hard cap per LDU. If exceeded, paragraph/list splitting is applied.
-  max_tokens: 350
+  max_tokens: 1200
   # true => split list chunks only at list-item boundaries; false => allow generic line splits.
   list_split_item_boundary_only: true
   # Regex used to recognize section headings.

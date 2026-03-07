@@ -1,0 +1,112 @@
+# Externalized chunking constitution and extraction thresholds
+
+extraction:
+  # Routing and escalation confidence thresholds
+  fast_confidence_floor: 0.60
+  layout_confidence_floor: 0.72
+  escalate_to_vision_floor: 0.50
+
+  # Fast-path gates
+  fast_min_chars_per_page: 100.0
+  fast_max_image_area_ratio: 0.50
+
+  # Handwriting and scanned-document heuristics
+  handwriting_whitespace_threshold: 0.92
+  handwriting_char_density_threshold: 0.002
+  handwriting_image_ratio_threshold: 0.55
+
+  # Generic scanned/OCR heuristics
+  scanned_image_ratio_threshold: 0.85
+  scanned_char_density_threshold: 0.001
+  scanned_min_text_blocks: 3
+
+chunking:
+  # Constitution rules and tokenizer budget
+  max_tokens: 1200
+  min_chunk_length: 30
+  max_chunk_length: 2000
+  max_table_rows: 50
+  max_list_items: 30
+
+  # Structure detection and splitting behavior
+  list_split_item_boundary_only: true
+  heading_regex: '^(\d+(\.\d+)*)\s+.+|^[A-Z][A-Za-z\s]{3,60}$|^[A-Z\s]{4,80}$'
+  list_item_regex: '^\s*(\d+\.|[-*])\s+'
+  cross_ref_regex: 'see\s+(table|figure|section)\s+\d+'
+  resolvable_ref_regex: 'see\s+(table|figure|section)\s+(\d+)'
+  table_block_overlap_suppress_ratio: 0.60
+  table_block_suppress_ethiopic_min_chars: 3
+
+  # Table quality guards
+  skip_empty_tables: true
+  min_table_rows_for_ldu: 1
+  min_table_nonempty_cells: 2
+
+quality_penalties:
+  # Heuristics to discount low-quality OCR/text
+  ocr_word_conf_mean_penalty: 60
+  ocr_word_conf_p10_penalty: 30
+  garbage_ratio_penalty: 0.25
+  avg_word_len_penalty: 2.0
+  token_diversity_penalty: 0.25
+  alpha_ratio_penalty: 0.20
+  ethiopic_ratio_penalty: 0.10
+
+confidence_clamps:
+  confidence_clamp_min: 0.05
+  confidence_clamp_max: 0.99
+  ocr_confidence_clamp_min: 0.05
+  ocr_confidence_clamp_max: 0.95
+
+pageindex:
+  # Section title quality rules
+  min_section_tokens: 2
+  max_section_tokens: 12
+  reject_numeric_only_titles: true
+  reject_table_headers: true
+  reject_fragment_titles: true
+  allow_all_caps_titles: true
+
+  # Header candidate scoring
+  top_margin_header_ratio: 0.15
+  min_header_confidence_delta: 0.05
+  min_section_text_chars: 80
+
+  # Summary generation
+  summary_min_sentences: 2
+  summary_max_sentences: 3
+  drop_noisy_blocks_before_summary: true
+  exclude_raw_tables_from_summary: true
+
+ocr:
+  # OCR language strategy
+  default_lang: eng
+  fallback_lang: eng+amh
+  scanned_default_lang: eng+amh
+  amharic_enabled: true
+
+  # OCR preprocessing
+  render_dpi: 300
+  upscale_factor: 2.0
+  grayscale: true
+  autocontrast: true
+  median_denoise: true
+  adaptive_threshold: true
+  deskew: true
+
+bbox:
+  # Bounding box normalization
+  clamp_to_page_bounds: true
+  clamp_epsilon: 0.001
+  allow_small_negative_rounding: true
+
+runtime:
+  # Runtime integration
+  runtime_rules_file: rubric/extraction_rules.yaml
+
+# Notes
+# - This file externalizes extraction routing, chunking constitution, OCR quality penalties,
+#   PageIndex quality rules, and bbox normalization settings.
+# - To use this file directly at runtime, set:
+#     REFINERY_RUNTIME_RULES_FILE=rubric/extraction_rules.yaml
+# - This allows tuning behavior without changing pipeline code.

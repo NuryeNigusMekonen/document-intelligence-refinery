@@ -1,0 +1,21 @@
+{
+  "doc_id": "doc_c716d4a64e11695a",
+  "doc_name": "2013-E.C-Audit-finding-information.pdf",
+  "sha256": "7b8976e32efc895a1ab0f78fb4376f3e1431dfa432b4c61b4427b30b1e103ab8",
+  "origin_type": "scanned_image",
+  "layout_complexity": "figure_heavy",
+  "language_hint": {
+    "language": "am",
+    "confidence": 0.9518018018018017
+  },
+  "domain_hint": "general",
+  "estimated_extraction_cost": "needs_vision_model",
+  "origin_confidence": 0.88,
+  "layout_confidence": 0.75,
+  "domain_confidence": 0.2,
+  "extraction_cost_confidence": 0.9,
+  "page_count": 3,
+  "avg_char_density": 0.0,
+  "image_area_ratio": 0.9999999953982673,
+  "whitespace_ratio": 1.0
+}
