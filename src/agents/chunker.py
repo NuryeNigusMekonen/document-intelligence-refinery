@@ -148,6 +148,86 @@ class ChunkingEngine:
             return normalized[6:].strip()
         return normalized
 
+    def _is_header_fragment_text(self, text: str) -> bool:
+        """
+        Heuristic for short header fragments that often appear split across lines in scanned PDFs,
+        e.g., "Deferred" on one line and "tax liability" on the next.
+
+        Accepts 1-6 tokens, rejects lines that end with sentence punctuation, numeric-only, or look like list items.
+        """
+        normalized = normalize_text(text or "")
+        if not normalized:
+            return False
+        # Reject obvious list markers
+        if self._is_list_item(normalized):
+            return False
+        # Reject if it looks like a complete sentence end
+        if normalized.endswith((".", "?", "!", ";", ":")):
+            return False
+        # Tokenize on words incl. Ethiopic range
+        tokens = re.findall(r"[\w\u1200-\u137F]+", normalized, flags=re.UNICODE)
+        n_tokens = len(tokens)
+        if n_tokens < 1 or n_tokens > 6:
+            return False
+        # Reject if majority numeric
+        digits = sum(ch.isdigit() for ch in normalized)
+        letters = sum(ch.isalpha() for ch in normalized)
+        if digits > 0 and digits >= letters:
+            return False
+        # Avoid obvious table header lines
+        if "|" in normalized:
+            return False
+        return True
+
+    def _split_paragraph_if_needed(self, text: str) -> list[str]:
+        """
+        Split oversized paragraph text into multiple parts that each respect the
+        max token budget. Prefer sentence boundaries; if a single sentence still
+        exceeds the budget, fall back to whitespace-based hard splits.
+        """
+        if token_count(text) <= self.max_tokens:
+            return [text]
+
+        # First try sentence-aware splitting (supports Latin and Ethiopic full stop ።)
+        # Keep delimiters by splitting on boundary whitespace after punctuation.
+        sentences = [s.strip() for s in re.split(r"(?<=[\.\?\!።])\s+", text) if s and s.strip()]
+        if not sentences:
+            sentences = [text]
+
+        parts: list[str] = []
+        current: list[str] = []
+        for sent in sentences:
+            candidate = (" ".join(current + [sent])).strip()
+            if token_count(candidate) > self.max_tokens and current:
+                parts.append(" ".join(current).strip())
+                current = [sent]
+            else:
+                current.append(sent)
+        if current:
+            parts.append(" ".join(current).strip())
+
+        # Ensure each part fits by falling back to hard token-based splitting
+        ensured: list[str] = []
+        for p in parts:
+            if token_count(p) <= self.max_tokens:
+                ensured.append(p)
+                continue
+            # Hard split by whitespace chunks while respecting token budget
+            chunks: list[str] = []
+            acc: list[str] = []
+            for piece in re.findall(r"\S+\s*", p):
+                candidate = ("".join(acc + [piece])).strip()
+                if token_count(candidate) > self.max_tokens and acc:
+                    chunks.append("".join(acc).strip())
+                    acc = [piece]
+                else:
+                    acc.append(piece)
+            if acc:
+                chunks.append("".join(acc).strip())
+            ensured.extend([c for c in chunks if c])
+
+        return ensured or [text]
+
     def _to_bbox(self, bbox: BBox | tuple[float, float, float, float]) -> BBox:
         if isinstance(bbox, BBox):
             return bbox
@@ -219,16 +299,53 @@ class ChunkingEngine:
         prov = "|".join(signatures)
         return sha256_text(normalize_text(content) + "||" + prov)
 
-    def _make_table_ldu(self, extracted: ExtractedDocument, page_number: int, table: TableObject, section_path: list[str]) -> LogicalDocumentUnit:
-        payload = {"headers": table.headers, "rows": table.rows}
-        content = " | ".join(table.headers) + "\n" + "\n".join([" | ".join(row) for row in table.rows])
+    def _make_table_ldu(
+        self,
+        extracted: ExtractedDocument,
+        page_number: int,
+        table: TableObject,
+        section_path: list[str],
+    ) -> LogicalDocumentUnit | None:
+        """
+        Build a table LDU. Returns None when the table has no meaningful textual content
+        (e.g., OCR returned empty headers/cells), so the caller can safely skip it.
+        """
+        # Guard against empty/garbage OCR results for tables
+        headers = list(table.headers or [])
+        rows = list(table.rows or [])
+
+        has_any_header_text = any((h or "").strip() for h in headers)
+        has_any_cell_text = any(any((c or "").strip() for c in (row or [])) for row in rows)
+
+        # The validator requires headers to exist. If there's no header text at all, skip.
+        if not has_any_header_text and not has_any_cell_text:
+            return None
+        if not has_any_header_text:
+            return None
+
+        # Build a stable textual representation, ignoring fully-empty rows
+        header_line = " | ".join(headers)
+        row_lines = [
+            " | ".join(row)
+            for row in rows
+            if any((c or "").strip() for c in row)
+        ]
+        content = header_line if not row_lines else header_line + "\n" + "\n".join(row_lines)
+
+        if not (content or "").strip():
+            return None
+
+        payload = {"headers": headers, "rows": rows}
         effective_section = self._effective_section_path(section_path, table.provenance)
         page_refs = [self._ref_for_payload(extracted, page_number, table.bbox, effective_section, table.provenance)]
         content_hash = self._hash_with_provenance(content, page_refs)
         for ref in page_refs:
             ref.content_hash = content_hash
         ldu = LogicalDocumentUnit(
-            ldu_id=deterministic_id("ldu", {"doc_id": extracted.doc_id, "type": "table", "page": page_number, "hash": content_hash}),
+            ldu_id=deterministic_id(
+                "ldu",
+                {"doc_id": extracted.doc_id, "type": "table", "page": page_number, "hash": content_hash},
+            ),
             chunk_type="table",
             content=content,
             structured_payload=payload,
@@ -352,8 +469,33 @@ class ChunkingEngine:
                 section_path = self._effective_section_path(section_path, block.provenance)
 
                 if self.heading_re.match(text) and not self._is_list_item(text):
-                    section_path = [text]
-                    idx += 1
+                    # Stitch adjacent short header fragments into a single title when present.
+                    title_parts: list[str] = [text]
+                    j = idx + 1
+                    while j < len(sorted_blocks):
+                        cand_block = sorted_blocks[j]
+                        cand_text = normalize_text(cand_block.text)
+                        if not cand_text:
+                            j += 1
+                            continue
+                        # Skip blocks that should be suppressed due to table overlap
+                        if self._should_suppress_block_for_table(cand_text, self._to_bbox(cand_block.bbox), table_bboxes):
+                            j += 1
+                            continue
+                        # Accept next line if it looks like a short header fragment
+                        if self._is_header_fragment_text(cand_text):
+                            # Tentatively append and check overall token budget for titles
+                            tentative = re.sub(r"\s+", " ", (" ".join(title_parts + [cand_text])).strip())
+                            tokens = re.findall(r"[\w\u1200-\u137F]+", tentative, flags=re.UNICODE)
+                            if 2 <= len(tokens) <= 12:
+                                title_parts.append(cand_text)
+                                j += 1
+                                continue
+                        break
+                    combined_title = re.sub(r"\s+", " ", (" ".join(title_parts)).strip())
+                    section_path = [combined_title]
+                    # Consume stitched header lines
+                    idx = j
                     continue
 
                 chunk_type = "list" if self._is_list_item(text) else "paragraph"
@@ -435,37 +577,77 @@ class ChunkingEngine:
                 for ref in page_refs:
                     ref.content_hash = content_hash
                 rel = self.cross_ref_re.findall(text)
-                ldu = LogicalDocumentUnit(
-                    ldu_id=deterministic_id(
-                        "ldu",
-                        {
-                            "doc": extracted.doc_id,
-                            "page": page.page_number,
-                            "order": block.reading_order,
-                            "part": text,
-                        },
-                    ),
-                    chunk_type="paragraph",
-                    content=text,
-                    token_count=token_count(text),
-                    bounding_box=block.bbox,
-                    parent_section=self._section_label(section_path),
-                    parent_section_path=section_path.copy(),
-                    page_refs=page_refs,
-                    provenance_chain=ProvenanceChain.from_refs(page_refs),
-                    content_hash=content_hash,
-                    relationships=[f"cross_ref:{t}" for t in rel],
-                )
-                for m in self.resolvable_ref_re.finditer(text):
-                    pending_resolved_refs.append(
-                        _ResolvableRef(ldu_index=len(ldus), ref_type=m.group(1).lower(), ordinal=int(m.group(2)))
+                # If the paragraph is within budget, emit a single LDU; otherwise split before validation
+                if token_count(text) <= self.max_tokens:
+                    ldu = LogicalDocumentUnit(
+                        ldu_id=deterministic_id(
+                            "ldu",
+                            {
+                                "doc": extracted.doc_id,
+                                "page": page.page_number,
+                                "order": block.reading_order,
+                                "part": text,
+                            },
+                        ),
+                        chunk_type="paragraph",
+                        content=text,
+                        token_count=token_count(text),
+                        bounding_box=block.bbox,
+                        parent_section=self._section_label(section_path),
+                        parent_section_path=section_path.copy(),
+                        page_refs=page_refs,
+                        provenance_chain=ProvenanceChain.from_refs(page_refs),
+                        content_hash=content_hash,
+                        relationships=[f"cross_ref:{t}" for t in rel],
                     )
-                self.validator.validate(ldu)
-                ldus.append(ldu)
+                    for m in self.resolvable_ref_re.finditer(text):
+                        pending_resolved_refs.append(
+                            _ResolvableRef(ldu_index=len(ldus), ref_type=m.group(1).lower(), ordinal=int(m.group(2)))
+                        )
+                    self.validator.validate(ldu)
+                    ldus.append(ldu)
+                else:
+                    parts = self._split_paragraph_if_needed(text)
+                    for part_index, part in enumerate(parts):
+                        part_refs = [ref.model_copy(deep=True) for ref in page_refs]
+                        part_hash = self._hash_with_provenance(part, part_refs)
+                        for ref in part_refs:
+                            ref.content_hash = part_hash
+                        rel_local = self.cross_ref_re.findall(part)
+                        part_ldu = LogicalDocumentUnit(
+                            ldu_id=deterministic_id(
+                                "ldu",
+                                {
+                                    "doc": extracted.doc_id,
+                                    "page": page.page_number,
+                                    "order": block.reading_order,
+                                    "part": part,
+                                    "split": part_index,
+                                },
+                            ),
+                            chunk_type="paragraph",
+                            content=part,
+                            token_count=token_count(part),
+                            bounding_box=block.bbox,
+                            parent_section=self._section_label(section_path),
+                            parent_section_path=section_path.copy(),
+                            page_refs=part_refs,
+                            provenance_chain=ProvenanceChain.from_refs(part_refs),
+                            content_hash=part_hash,
+                            relationships=[f"cross_ref:{t}" for t in rel_local],
+                        )
+                        for m in self.resolvable_ref_re.finditer(part):
+                            pending_resolved_refs.append(
+                                _ResolvableRef(ldu_index=len(ldus), ref_type=m.group(1).lower(), ordinal=int(m.group(2)))
+                            )
+                        self.validator.validate(part_ldu)
+                        ldus.append(part_ldu)
 
             for table in page.tables:
                 table_section = self._effective_section_path(section_path, table.provenance)
-                ldus.append(self._make_table_ldu(extracted, page.page_number, table, table_section))
+                table_ldu = self._make_table_ldu(extracted, page.page_number, table, table_section)
+                if table_ldu is not None:
+                    ldus.append(table_ldu)
 
             for figure in page.figures:
                 caption = normalize_text(figure.caption or "")

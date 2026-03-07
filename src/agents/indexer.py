@@ -166,18 +166,33 @@ class PageIndexBuilder:
         ldu: LogicalDocumentUnit,
         page_top_min: dict[int, float],
     ) -> bool:
+        # Only paragraphs can be headers
         if ldu.chunk_type != "paragraph":
             return False
         text = re.sub(r"\s+", " ", (ldu.content or "").strip())
-        if not text or len(text) > 90 or "|" in text:
+        if not text or len(text) > 80 or "|" in text:
             return False
-        if text.endswith((".", "?", "!", ";")):
+
+        # Reject if inside a table (table context check)
+        if ldu.parent_section and ("table" in ldu.parent_section.lower() or "|" in (ldu.parent_section or "")):
+            return False
+
+        # Reject if mostly numeric or too generic
+        if sum(c.isdigit() for c in text) / max(len(text), 1) > 0.5:
+            return False
+        generic_terms = {"note", "table", "figure", "section", "appendix"}
+        if text.lower() in generic_terms:
+            return False
+
+        # Reject if looks like a sentence fragment (ends with punctuation)
+        if text.endswith((".", "?", "!", ";", ",", ":")):
             return False
 
         tokens = re.findall(r"[\w\u1200-\u137F]+", text, flags=re.UNICODE)
-        if len(tokens) < 1 or len(tokens) > 10:
+        if len(tokens) < 2 or len(tokens) > 12:
             return False
 
+        # Must be near top of page
         page_num = None
         y0 = None
         if ldu.page_refs:
@@ -185,29 +200,31 @@ class PageIndexBuilder:
             page_num = ref0.page_number
             if ref0.bbox is not None and len(ref0.bbox) == 4:
                 y0 = float(ref0.bbox[1])
-
         near_top = True
         if page_num is not None and y0 is not None and page_num in page_top_min:
             near_top = y0 <= (page_top_min[page_num] + 120.0)
-
         if not near_top:
             return False
 
+        # Heading style: numbered, all caps, or title case
         if NUMBERED_HEADER_RE.match(text):
             return True
-
         upper_ratio = self._uppercase_ratio(text)
         if upper_ratio >= 0.65:
             return True
-
         title_ratio = self._title_case_ratio(text)
         if title_ratio >= 0.70 and len(tokens) <= 8:
             return True
 
+        # Ethiopic script heading
         ethiopic_chars = len(re.findall(r"[\u1200-\u137F]", text))
         letters = sum(1 for ch in text if ch.isalpha())
         if letters > 0 and (ethiopic_chars / letters) >= 0.65 and len(tokens) <= 8:
             return True
+
+        # Reject if too short and not a clear valid header
+        if len(tokens) < 2:
+            return False
 
         return False
 

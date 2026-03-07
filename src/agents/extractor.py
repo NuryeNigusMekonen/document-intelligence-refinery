@@ -91,6 +91,30 @@ def _as_bbox(obj: dict, fallback: tuple[float, float, float, float]) -> tuple[fl
     )
 
 
+def _sanitize_bbox_tuple(
+    bbox: tuple[float, float, float, float],
+    page_w: float,
+    page_h: float,
+    *,
+    eps: float = 1e-4,
+) -> tuple[float, float, float, float]:
+    """Clamp bbox coordinates into [0, page_dim] and ensure proper ordering and non-zero area.
+
+    This prevents precision artifacts such as tiny negative values (e.g., -1e-5) from violating
+    schema constraints (ge=0 on BBox coordinates) and ensures y1>y0 and x1>x0.
+    """
+    x0, y0, x1, y1 = map(float, bbox)
+    x0 = max(0.0, min(float(page_w), x0))
+    y0 = max(0.0, min(float(page_h), y0))
+    x1 = max(0.0, min(float(page_w), x1))
+    y1 = max(0.0, min(float(page_h), y1))
+    if x1 <= x0:
+        x1 = min(float(page_w), x0 + eps)
+    if y1 <= y0:
+        y1 = min(float(page_h), y0 + eps)
+    return (x0, y0, x1, y1)
+
+
 class FastTextExtractor(BaseExtractor):
     name = "fast_text"
 
@@ -126,6 +150,7 @@ class FastTextExtractor(BaseExtractor):
                     if not text:
                         continue
                     word_bbox = _as_bbox(w, (0.0, 0.0, page.width, page.height))
+                    word_bbox = _sanitize_bbox_tuple(word_bbox, page.width, page.height)
                     blocks.append(
                         TextBlock(
                             text=text,
@@ -241,7 +266,7 @@ class LayoutLiteExtractor(BaseExtractor):
                 blocks = [
                     TextBlock(
                         text=(b[4] or "").strip(),
-                        bbox=(float(b[0]), float(b[1]), float(b[2]), float(b[3])),
+                        bbox=_sanitize_bbox_tuple((float(b[0]), float(b[1]), float(b[2]), float(b[3])), page.width, page.height),
                         reading_order=i,
                         confidence=0.80,
                         confidence_signals=[
@@ -257,7 +282,7 @@ class LayoutLiteExtractor(BaseExtractor):
                             doc_name=profile.doc_name,
                             ref_type="pdf_bbox",
                             page_number=pidx,
-                            bbox=(float(b[0]), float(b[1]), float(b[2]), float(b[3])),
+                            bbox=_sanitize_bbox_tuple((float(b[0]), float(b[1]), float(b[2]), float(b[3])), page.width, page.height),
                             content_hash="pending",
                         ),
                     )
@@ -272,11 +297,15 @@ class LayoutLiteExtractor(BaseExtractor):
                         continue
                     headers = [str(c or "").strip() for c in extracted[0]] if extracted else []
                     rows = [[str(c or "").strip() for c in row] for row in extracted[1:]] if len(extracted) > 1 else []
-                    bbox = (
-                        float(table_obj.bbox[0]),
-                        float(table_obj.bbox[1]),
-                        float(table_obj.bbox[2]),
-                        float(table_obj.bbox[3]),
+                    bbox = _sanitize_bbox_tuple(
+                        (
+                            float(table_obj.bbox[0]),
+                            float(table_obj.bbox[1]),
+                            float(table_obj.bbox[2]),
+                            float(table_obj.bbox[3]),
+                        ),
+                        page.width,
+                        page.height,
                     )
                     tables.append(
                         TableObject(
@@ -320,7 +349,13 @@ class LayoutLiteExtractor(BaseExtractor):
                 for img in mu_page.get_images(full=True):
                     xref = img[0]
                     for rect in mu_page.get_image_rects(xref):
-                        figure_boxes.append((float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)))
+                        figure_boxes.append(
+                            _sanitize_bbox_tuple(
+                                (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)),
+                                page.width,
+                                page.height,
+                            )
+                        )
 
                 for f_idx, fig_bbox in enumerate(figure_boxes):
                     caption = None

@@ -243,7 +243,9 @@ class TriageAgent:
                     mixed_mode_pages += 1
 
         avg_char_density = total_chars / max(total_page_area, 1.0)
-        image_area_ratio = total_image_area / max(total_page_area, 1.0)
+        # Floating point accumulation can push the ratio a hair above 1.0 (e.g., 1.00000001)
+        # Clamp to [0, 1] to satisfy schema constraints and reflect a true ratio.
+        image_area_ratio = max(0.0, min(1.0, total_image_area / max(total_page_area, 1.0)))
         whitespace_ratio = max(0.0, min(1.0, 1.0 - (avg_char_density / 0.0015)))
         multi_column_votes = sum(1 for c in col_votes if c == 2)
         estimated_columns = 2 if multi_column_votes > (len(col_votes) / 2) else 1
