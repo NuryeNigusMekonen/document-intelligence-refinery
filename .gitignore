@@ -35,3 +35,4 @@ reports/*png
 !reports/final_qa_provenance_examples.jsonrubric/
 .refinery copy/
 .refinery copy 2/
+reports/demo/
