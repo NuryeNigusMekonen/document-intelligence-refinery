@@ -81,6 +81,53 @@ def _make_table_agent(tmp_path: Path, doc_id: str = "doc_t") -> QueryAgent:
     return QueryAgent(store, vector, facts)
 
 
+def _make_financial_table_agent(tmp_path: Path, doc_id: str = "doc_fin") -> QueryAgent:
+    settings = Settings(workspace_root=tmp_path)
+    store = ArtifactStore(settings)
+    heading = LogicalDocumentUnit(
+        ldu_id="ldu_heading",
+        chunk_type="paragraph",
+        content="## ETHIOPIAN REINSURANCE SHARE COMPANY NOTES TO FINANCIAL STATEMENTS FOR THE YEAR ENDED 30 JUNE 2018",
+        token_count=20,
+        parent_section_path=["Foreign currency transactions"],
+        parent_section="Foreign currency transactions",
+        page_refs=[ProvenanceRef(doc_name="sample.pdf", ref_type="pdf_bbox", page_number=54, bbox=(10, 20, 200, 220), content_hash="h-heading")],
+        content_hash="h-heading",
+    )
+    table = LogicalDocumentUnit(
+        ldu_id="ldu_fin_table",
+        chunk_type="table",
+        content=(
+            " | Gen.Ins | Long Term Ins | Total | Total\n"
+            " | 2018 | 2018 | 2018 | 2017\n"
+            "Administrative and general | 11,728,553 | 278,524 | 12,007,077 | 4,493,113\n"
+            "Staff costs | 7,115,808 | 127,394 | 7,243,202 | 4,362,723\n"
+            "Depreciation | 2,147,526 | 56,609 | 2,204,136 | 1,923,146\n"
+            "Total expenses | 21,602,387 | 462,528 | 22,064,915 | 11,383,482"
+        ),
+        structured_payload={
+            "headers": ["", "Gen.Ins", "Long Term Ins", "Total", "Total"],
+            "rows": [
+                ["", "2018", "2018", "2018", "2017"],
+                ["Administrative and general", "11,728,553", "278,524", "12,007,077", "4,493,113"],
+                ["Staff costs", "7,115,808", "127,394", "7,243,202", "4,362,723"],
+                ["Depreciation", "2,147,526", "56,609", "2,204,136", "1,923,146"],
+                ["Total expenses", "21,602,387", "462,528", "22,064,915", "11,383,482"],
+            ],
+        },
+        token_count=60,
+        parent_section_path=["Operating and Other Expenses"],
+        parent_section="Operating and Other Expenses",
+        page_refs=[ProvenanceRef(doc_name="sample.pdf", ref_type="pdf_bbox", page_number=84, bbox=(10, 20, 200, 220), content_hash="h-fin-table")],
+        content_hash="h-fin-table",
+    )
+    store.write_jsonl(store.chunks_dir / f"{doc_id}.jsonl", [heading.model_dump(mode="json"), table.model_dump(mode="json")])
+    _seed_pageindex(store, doc_id)
+    vector = VectorIndex(store)
+    facts = FactStore(store.db_dir / "facts.db")
+    return QueryAgent(store, vector, facts)
+
+
 def _make_multisection_agent(tmp_path: Path, doc_id: str = "doc_m") -> QueryAgent:
     settings = Settings(workspace_root=tmp_path)
     store = ArtifactStore(settings)
@@ -159,7 +206,7 @@ def test_query_interface_compacts_table_answer(tmp_path: Path):
     agent = _make_table_agent(tmp_path)
     out = agent.query_interface("doc_t", "የ3ኛው ሩብ በጀት እና ወጪ መረጃ")
     answer = str(out.get("answer") or "")
-    assert "Table summary:" in answer
+    assert answer.startswith("Table summary:") or answer.startswith("Table-like summary:")
     assert answer.count("|") < 20
     _assert_provenance_fields(out)
 
@@ -287,3 +334,36 @@ def test_measure_retrieval_precision_with_and_without_pageindex(tmp_path: Path):
     assert "precision_at_k" in metrics["with_pageindex"]
     assert "precision_at_k" in metrics["without_pageindex"]
     assert metrics["with_pageindex"]["precision_at_k"] >= metrics["without_pageindex"]["precision_at_k"]
+
+
+def test_query_interface_table_answer_prefers_matching_row_label(tmp_path: Path, monkeypatch):
+    agent = _make_financial_table_agent(tmp_path)
+    hits = agent._load_ldus("doc_fin")
+    monkeypatch.setattr(agent, "semantic_search_tool", lambda *_args, **_kwargs: hits)
+
+    out = agent.query_interface(
+        "doc_fin",
+        "What is the depreciation expense in Gen. Ins for 2018 under operating and other expenses?",
+    )
+
+    answer = str(out.get("answer") or "")
+    assert "Depreciation" in answer
+    assert "2,147,526" in answer
+    assert "Total expenses" not in answer
+    _assert_provenance_fields(out)
+
+
+def test_semantic_search_tool_merges_lexical_hits_with_semantic_hits(tmp_path: Path, monkeypatch):
+    agent = _make_financial_table_agent(tmp_path, doc_id="doc_fin_sem")
+
+    heading_hit = next(ldu for ldu in agent._load_ldus("doc_fin_sem") if ldu.ldu_id == "ldu_heading")
+    monkeypatch.setattr(agent.vector_index, "search", lambda *_args, **_kwargs: [heading_hit])
+
+    hits = agent.semantic_search_tool(
+        "doc_fin_sem",
+        "What are the administrative and general expenses in Gen. Ins for 2018 under operating and other expenses?",
+        top_k=3,
+    )
+
+    assert any(hit.chunk_type == "table" for hit in hits)
+    assert any("Administrative and general" in (hit.content or "") for hit in hits)

@@ -49,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     qiface.add_argument("--debug-sections", action="store_true", help="Include PageIndex section selection/debug metadata")
     qiface.add_argument("question")
     qiface.add_argument("--output", type=str, default=None, help="Optional path to save the output JSON result.")
+    qiface.add_argument(
+        "--append-output",
+        action="store_true",
+        help=(
+            "If set together with --output, append the current question/answer to the existing JSON file "
+            "instead of overwriting it. The file will contain a JSON array of entries."
+        ),
+    )
 
     audit = sub.add_parser("audit")
     audit.add_argument("--doc", required=True)
@@ -142,13 +150,42 @@ def main() -> None:
             store.append_jsonl(store.query_history_file, record)
         except Exception:
             pass
-        output_json = json.dumps(out_with_question, indent=2, ensure_ascii=False)
+
+        # Decide how to save the output when --output is provided.
         if getattr(args, "output", None):
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(output_json)
+            out_path = Path(args.output)
+            data_to_write: object
+
+            if getattr(args, "append_output", False):
+                # Append semantics: keep a JSON array of entries in the output file.
+                if out_path.exists():
+                    try:
+                        existing = json.loads(out_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        existing = None
+
+                    if isinstance(existing, list):
+                        existing.append(out_with_question)
+                        data_to_write = existing
+                    elif isinstance(existing, dict):
+                        # Existing single object -> promote to array
+                        data_to_write = [existing, out_with_question]
+                    else:
+                        # Unknown/invalid content -> start a new array
+                        data_to_write = [out_with_question]
+                else:
+                    # New file with append semantics: start with a single-entry array
+                    data_to_write = [out_with_question]
+            else:
+                # Default behavior: overwrite with a single object (backwards compatible)
+                data_to_write = out_with_question
+
+            output_json = json.dumps(data_to_write, indent=2, ensure_ascii=False)
+            out_path.write_text(output_json, encoding="utf-8")
             print(f"Output saved to {args.output}")
         else:
-            print(output_json)
+            # No output path -> print a single object
+            print(json.dumps(out_with_question, indent=2, ensure_ascii=False))
         return
 
     if args.command == "audit":

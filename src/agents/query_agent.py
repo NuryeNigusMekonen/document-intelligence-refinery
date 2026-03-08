@@ -96,7 +96,34 @@ class QueryAgent:
     def semantic_search_tool(self, doc_id: str, query: str, top_k: int = 5) -> list[LogicalDocumentUnit]:
         ldus = self._load_ldus(doc_id)
         self.vector_index.build(doc_id, ldus)
-        return self.vector_index.search(doc_id, query, top_k=top_k)
+        semantic_hits = self.vector_index.search(doc_id, query, top_k=top_k)
+        lexical_hits = self._rank_ldus_lexical(ldus, query, top_k=top_k)
+
+        q_tokens = self._question_content_tokens(query)
+        merged: list[tuple[tuple[int, int, int, int], LogicalDocumentUnit]] = []
+        seen: set[str] = set()
+
+        def _hit_key(hit: LogicalDocumentUnit) -> str:
+            return hit.ldu_id or hit.content_hash or str(id(hit))
+
+        semantic_rank = {_hit_key(hit): idx for idx, hit in enumerate(semantic_hits)}
+        lexical_rank = {_hit_key(hit): idx for idx, hit in enumerate(lexical_hits)}
+
+        for hit in semantic_hits + lexical_hits:
+            key = _hit_key(hit)
+            if key in seen:
+                continue
+            seen.add(key)
+            text = hit.content or json.dumps(hit.structured_payload or {}, ensure_ascii=False)
+            overlap = self._text_overlap_score(text, q_tokens)
+            table_bonus = 1 if self._is_table_like_hit(hit) else 0
+            sem_bonus = 1 if key in semantic_rank else 0
+            sem_idx = semantic_rank.get(key, 10_000)
+            lex_idx = lexical_rank.get(key, 10_000)
+            merged.append(((overlap, table_bonus, sem_bonus, -(sem_idx + lex_idx)), hit))
+
+        merged.sort(key=lambda x: x[0], reverse=True)
+        return [hit for _score, hit in merged[:top_k]]
 
     def _normalize_section_title(self, title: str) -> str:
         return normalize_text(str(title or "")).strip().lower()
@@ -144,24 +171,25 @@ class QueryAgent:
         return False
 
     def _rank_ldus_lexical(self, ldus: list[LogicalDocumentUnit], query: str, top_k: int) -> list[LogicalDocumentUnit]:
-        query_terms = [t.lower() for t in re.findall(r"\w+", query, flags=re.UNICODE)]
+        query_terms = self._question_content_tokens(query)
         if not query_terms:
             return ldus[:top_k]
 
         query_vec = Counter(query_terms)
-        ranked: list[tuple[float, LogicalDocumentUnit]] = []
+        ranked: list[tuple[float, int, LogicalDocumentUnit]] = []
         for ldu in ldus:
-            text = ldu.content or str(ldu.structured_payload or "")
+            text = normalize_text(ldu.content or json.dumps(ldu.structured_payload or {}, ensure_ascii=False))
             doc_terms = [t.lower() for t in re.findall(r"\w+", text, flags=re.UNICODE)]
             if not doc_terms:
                 continue
             doc_vec = Counter(doc_terms)
             score = sum(min(query_vec[t], doc_vec[t]) for t in query_vec.keys())
             if score > 0:
-                ranked.append((float(score), ldu))
+                table_bonus = 1 if self._is_table_like_hit(ldu) else 0
+                ranked.append((float(score), table_bonus, ldu))
 
-        ranked.sort(key=lambda x: x[0], reverse=True)
-        return [ldu for _, ldu in ranked[:top_k]]
+        ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [ldu for _, _bonus, ldu in ranked[:top_k]]
 
     def _semantic_search_with_sections(self, doc_id: str, query: str, sections: list[dict] | None, top_k: int) -> list[LogicalDocumentUnit]:
         if not sections:
@@ -461,6 +489,68 @@ class QueryAgent:
     def _tokenize_answer_text(self, text: str) -> list[str]:
         return [t.lower() for t in re.findall(r"\w+", text, flags=re.UNICODE)]
 
+    def _question_content_tokens(self, text: str) -> list[str]:
+        raw_tokens = [t for t in self._tokenize_answer_text(text) if len(t) >= 2]
+        stopwords = {
+            "the",
+            "and",
+            "or",
+            "is",
+            "are",
+            "was",
+            "were",
+            "in",
+            "on",
+            "at",
+            "of",
+            "for",
+            "to",
+            "from",
+            "by",
+            "with",
+            "how",
+            "what",
+            "which",
+            "who",
+            "whom",
+            "where",
+            "when",
+            "why",
+            "much",
+            "many",
+            "does",
+            "do",
+            "did",
+            "be",
+            "been",
+            "being",
+            "into",
+            "over",
+            "under",
+            "between",
+            "an",
+            "a",
+            "any",
+        }
+        tokens = [t for t in raw_tokens if t not in stopwords]
+        return tokens or raw_tokens
+
+    def _text_overlap_score(self, text: str, q_tokens: list[str]) -> int:
+        text_tokens = set(self._tokenize_answer_text(normalize_text(text or "")))
+        if not text_tokens:
+            return 0
+        return sum(1 for t in q_tokens if len(t) >= 2 and t in text_tokens)
+
+    def _row_label_text(self, row: list[str]) -> str:
+        for cell in row:
+            cell_text = normalize_text(str(cell or "")).strip()
+            if not cell_text:
+                continue
+            if re.fullmatch(r"[\d\s,\.\-/]+", cell_text):
+                continue
+            return cell_text
+        return normalize_text(str(row[0] if row else "")).strip()
+
     def _is_noisy_answer_text(self, text: str) -> bool:
         t = normalize_text(text or "")
         if len(t) < 8:
@@ -503,34 +593,193 @@ class QueryAgent:
             rows.append(cells)
         return rows
 
-    def _compact_table_answer_from_hit(self, hit: LogicalDocumentUnit, question: str) -> str | None:
-        text = hit.content or ""
-        rows = self._parse_pipe_table_rows(text)
-        if len(rows) < 2:
-            return None
+    def _table_question_score(self, hit: LogicalDocumentUnit, question: str) -> tuple[int, int, int, int, int]:
+        headers: list[str] = []
+        data_rows: list[list[str]] = []
 
-        header = rows[0]
-        data_rows = rows[1:]
-        header_cells = [c for c in header if c][:6]
+        if hit.chunk_type == "table" and hit.structured_payload:
+            try:
+                headers = [str(h or "").strip() for h in (hit.structured_payload.get("headers") or [])]
+                data_rows = [[str(c or "").strip() for c in (row or [])] for row in (hit.structured_payload.get("rows") or [])]
+            except Exception:
+                headers = []
+                data_rows = []
+
+        if not headers or not data_rows:
+            rows = self._parse_pipe_table_rows(hit.content or "")
+            if len(rows) < 2:
+                return (0, -999, 0, 0, 0)
+            headers = rows[0]
+            data_rows = rows[1:]
+
+        q_tokens = self._question_content_tokens(question)
+        header_tokens: set[str] = set()
+        for cell in headers:
+            header_tokens.update(self._tokenize_answer_text(str(cell or "").lower()))
+        header_overlap = sum(1 for t in q_tokens if t in header_tokens)
+
+        question_norm = normalize_text(question).lower()
+        best = (0, -999, 0, 0)
+        for row in data_rows:
+            if not str(row[0] if row else "").strip():
+                continue
+            label_text = self._row_label_text(row)
+            label_lower = label_text.lower()
+            row_text = " ".join(row).lower()
+            label_tokens = set(self._tokenize_answer_text(label_lower))
+            row_tokens = set(self._tokenize_answer_text(row_text))
+            headerish_tokens = header_tokens | {tok for tok in row_tokens if tok.isdigit() and len(tok) == 4}
+            if label_tokens and label_tokens.issubset(headerish_tokens):
+                continue
+            label_overlap = sum(1 for t in q_tokens if t in label_tokens)
+            row_overlap = sum(1 for t in q_tokens if t in row_tokens)
+            exact_phrase_bonus = 4 if label_lower and label_lower in question_norm else 0
+            total_penalty = -2 if "total" in label_lower and "total" not in q_tokens else 0
+            numeric = len(re.findall(r"\d+(?:[\.,]\d+)?", row_text))
+            candidate = (label_overlap, row_overlap + exact_phrase_bonus + total_penalty, numeric, len(label_text))
+            if candidate > best:
+                best = candidate
+
+        return (best[0], best[1], header_overlap, best[2], best[3])
+
+    def _compact_table_answer_from_hit(self, hit: LogicalDocumentUnit, question: str) -> str | None:
+        """Attempt to extract a single numeric value from a table hit.
+
+        Preferred path:
+        - If the hit is a structured table LDU (chunk_type == "table" with
+          structured_payload["headers"/"rows"]), operate directly on that
+          structured data.
+        - Otherwise, fall back to parsing pipe-delimited text from
+          hit.content.
+
+        If we cannot confidently pick a single numeric cell, fall back to a
+        compact table summary for backwards compatibility.
+        """
+
+        headers: list[str] = []
+        data_rows: list[list[str]] = []
+
+        # Prefer structured table payload when available.
+        if hit.chunk_type == "table" and hit.structured_payload:
+            try:
+                raw_headers = hit.structured_payload.get("headers") or []
+                raw_rows = hit.structured_payload.get("rows") or []
+                headers = [str(h or "").strip() for h in raw_headers]
+                data_rows = [
+                    [str(c or "").strip() for c in (row or [])]
+                    for row in raw_rows
+                ]
+            except Exception:
+                headers = []
+                data_rows = []
+
+        # Fallback: derive rows from pipe-delimited content.
+        if not headers or not data_rows:
+            text = hit.content or ""
+            rows = self._parse_pipe_table_rows(text)
+            if len(rows) < 2:
+                return None
+            headers = rows[0]
+            data_rows = rows[1:]
+
+        header_cells = [c for c in headers if c][:6]
         header_text = " | ".join(header_cells) if header_cells else "(no clear header)"
 
-        q_tokens = [t for t in self._tokenize_answer_text(question) if len(t) >= 2]
+        q_tokens = self._question_content_tokens(question)
 
-        def row_score(row: list[str]) -> tuple[int, int]:
+        # Try to find a single numeric cell that best answers the question by
+        # matching row labels and, when possible, the most relevant column
+        # header (e.g., "30 June 2018"). If this fails, fall back to a
+        # descriptive table summary for backwards compatibility.
+
+        # 1) Choose a target column based on question tokens and header cells.
+        header_lower = [c.lower() for c in headers]
+        header_token_set: set[str] = set()
+        for cell in header_lower:
+            header_token_set.update(self._tokenize_answer_text(cell))
+        col_scores: list[tuple[int, int, int]] = []  # (score, numeric_hint, col_idx)
+        for idx, cell in enumerate(header_lower):
+            if not cell:
+                continue
+            cell_tokens = set(self._tokenize_answer_text(cell))
+            score = sum(1 for t in q_tokens if t in cell_tokens)
+            # Light numeric hint: prefer columns that look like dates or numbers
+            numeric_hint = len(re.findall(r"\d{4}|\d+", cell))
+            col_scores.append((score, numeric_hint, idx))
+
+        target_col: int | None = None
+        if col_scores:
+            best_score, _, best_idx = max(col_scores, key=lambda x: (x[0], x[1]))
+            if best_score > 0:
+                target_col = best_idx
+
+        # 2) Score rows by lexical overlap with the question.
+        def row_score(row: list[str]) -> tuple[int, int, int, int]:
+            if not str(row[0] if row else "").strip():
+                row_text = " ".join(row).lower()
+                numeric = len(re.findall(r"\d+(?:[\.,]\d+)?", row_text))
+                return 0, -999, numeric, 0
+            label_text = self._row_label_text(row)
+            label_lower = label_text.lower()
             row_text = " ".join(row).lower()
-            overlap = sum(1 for t in q_tokens if t in row_text)
+            label_tokens = set(self._tokenize_answer_text(label_lower))
+            row_tokens = set(self._tokenize_answer_text(row_text))
+            headerish_tokens = header_token_set | {tok for tok in row_tokens if tok.isdigit() and len(tok) == 4}
+            if label_tokens and label_tokens.issubset(headerish_tokens):
+                numeric = len(re.findall(r"\d+(?:[\.,]\d+)?", row_text))
+                return 0, -999, numeric, len(label_text)
+            label_overlap = sum(1 for t in q_tokens if t in label_tokens)
+            row_overlap = sum(1 for t in q_tokens if t in row_tokens)
+            exact_phrase_bonus = 4 if label_lower and label_lower in normalize_text(question).lower() else 0
+            total_penalty = -2 if "total" in label_lower and "total" not in q_tokens else 0
             numeric = len(re.findall(r"\d+(?:[\.,]\d+)?", row_text))
-            return overlap, numeric
+            return label_overlap, row_overlap + exact_phrase_bonus + total_penalty, numeric, len(label_text)
 
-        scored = [(idx, row, *row_score(row)) for idx, row in enumerate(data_rows)]
-        scored_sorted = sorted(scored, key=lambda x: (x[2], x[3]), reverse=True)
-        picked = [item for item in scored_sorted[:3] if item[2] > 0 or item[3] > 0]
-        if not picked:
-            picked = scored_sorted[:2]
+        scored_rows = [(idx, row, *row_score(row)) for idx, row in enumerate(data_rows)]
+        # Prefer rows whose first-column label best matches the question.
+        scored_sorted = sorted(scored_rows, key=lambda x: (x[2], x[3], x[4], x[5]), reverse=True)
 
+        # Require a minimum amount of lexical overlap between the question and
+        # a table row before trusting a single numeric cell. This avoids
+        # picking rows that match only on a very generic token like "net".
+        min_overlap_required = 1
+        max_overlap = max((item[2] for item in scored_rows), default=0)
+        if max_overlap < min_overlap_required:
+            return None
+
+        # 3) Try to pick the single best numeric cell.
+        for _idx, row, label_overlap, overlap, numeric, _label_len in scored_sorted:
+            if label_overlap < min_overlap_required or numeric <= 0:
+                continue
+
+            # If we have a target column and it has a value, use it.
+            if target_col is not None and target_col < len(row):
+                cell = row[target_col].strip()
+                if cell:
+                    label = " ".join(c for c in row if c).strip()
+                    col_label = headers[target_col].strip() if target_col < len(headers) else ""
+                    return (
+                        f"Value from table: row '{label}', column '{col_label}': {cell}"
+                    )[:900]
+
+            # Fallback: return the first numeric-looking cell from the row.
+            for cell in row:
+                if not cell:
+                    continue
+                if re.search(r"\d", cell):
+                    label = " ".join(c for c in row if c).strip()
+                    return (
+                        f"Value from table row '{label}': {cell.strip()}"
+                    )[:900]
+
+        # 4) If we cannot confidently pick a single cell, fall back to a compact
+        # table summary (previous behavior).
+        picked = [item for item in scored_sorted[:3] if item[2] > 0 or item[3] > 0] or scored_sorted[:2]
         picked = sorted(picked, key=lambda x: x[0])
         row_summaries: list[str] = []
-        for _idx, row, _overlap, _numeric in picked:
+        for item in picked:
+            # item is (idx, row, label_overlap, row_overlap, numeric, label_len)
+            row = item[1]
             compact_cells = [c for c in row if c][:6]
             if not compact_cells:
                 continue
@@ -569,20 +818,42 @@ class QueryAgent:
         key_values = " | ".join(selected[:10]) if selected else " | ".join(cells[8:16])
         return f"Table-like summary: {head}. Key values: {key_values}"[:900]
 
-    def _compose_answer_from_hits(self, hits: list[LogicalDocumentUnit], question: str) -> str:
-        for hit in hits[:3]:
-            if not self._is_table_like_hit(hit):
-                continue
+    def _compose_answer_with_sources(self, hits: list[LogicalDocumentUnit], question: str) -> tuple[str, list[LogicalDocumentUnit]]:
+        # Light lexical re-ranking: if some hits clearly share multiple
+        # meaningful tokens with the question, consider them first. This helps
+        # steer table-based answers toward the table that actually mentions
+        # phrases like "Net Claims Incurred" instead of an unrelated table.
+        if hits:
+            q_tokens = self._question_content_tokens(question)
+
+            def _hit_overlap_score(hit: LogicalDocumentUnit) -> int:
+                text = (hit.content or "").lower()
+                if not text:
+                    return 0
+                return self._text_overlap_score(text, q_tokens)
+
+            scored = [( _hit_overlap_score(h), idx, h) for idx, h in enumerate(hits)]
+            max_score = max((s for s, _i, _h in scored), default=0)
+            if max_score >= 1:
+                scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+                hits = [h for _s, _i, h in scored]
+
+        table_hits = [hit for hit in hits[:5] if self._is_table_like_hit(hit)]
+        if table_hits:
+            table_hits.sort(key=lambda h: self._table_question_score(h, question), reverse=True)
+
+        for hit in table_hits:
             compact = self._compact_table_answer_from_hit(hit, question)
             if compact:
-                return compact
+                return compact, [hit]
 
-        for hit in hits[:3]:
+        for hit in table_hits:
             compact_stream = self._compact_pipe_stream_answer(hit.content or "", question)
             if compact_stream:
-                return compact_stream
+                return compact_stream, [hit]
 
         snippets: list[str] = []
+        snippet_hits: list[LogicalDocumentUnit] = []
         seen: set[str] = set()
         for hit in hits:
             raw = hit.content or ""
@@ -596,14 +867,18 @@ class QueryAgent:
                 continue
             seen.add(key)
             snippets.append(text)
+            snippet_hits.append(hit)
             if len(snippets) >= 3:
                 break
 
         if snippets:
-            return " ".join(snippets)[:900]
+            return " ".join(snippets)[:900], snippet_hits
 
         fallback = " ".join([(h.content or "") for h in hits[:3]]).strip()
-        return normalize_text(fallback)[:900]
+        return normalize_text(fallback)[:900], hits[:3]
+
+    def _compose_answer_from_hits(self, hits: list[LogicalDocumentUnit], question: str) -> str:
+        return self._compose_answer_with_sources(hits, question)[0]
 
     def _build_ollama_context_from_hits(self, hits: list[LogicalDocumentUnit]) -> str:
         max_chars = max(int(self.store.settings.ollama_max_context_chars), 1000)
@@ -732,7 +1007,7 @@ class QueryAgent:
             top_k=self.store.settings.query_semantic_top_k,
         )
         if hits:
-            answer_text = self._compose_answer_from_hits(hits, question)
+            answer_text, answer_hits = self._compose_answer_with_sources(hits, question)
             # For temporal ("when") questions, try to ensure the answer
             # actually contains a date. If it doesn't, scan the same
             # hits' content for a plausible date and prefer that.
@@ -765,7 +1040,7 @@ class QueryAgent:
                 fallback["navigation_sections"] = navigation_sections
                 fallback["used_section_scope"] = used_section_scope
                 return fallback
-            provenance = self._provenance_from_hits(doc_id, hits)
+            provenance = self._provenance_from_hits(doc_id, answer_hits or hits)
             return {
                 "answer": answer_text,
                 "provenance_chain": [p.model_dump(mode="json") for p in provenance],
@@ -872,7 +1147,7 @@ class QueryAgent:
             used_section_scope = bool(state.get("used_section_scope") or False)
             hits = state.get("hits") or []
             if hits:
-                answer_text = self._compose_answer_from_hits(hits, question)
+                answer_text, answer_hits = self._compose_answer_with_sources(hits, question)
                 # For temporal ("when") questions in the langgraph path,
                 # also enforce that the answer contains a plausible date.
                 # If not, try to extract a date from the same hit context
@@ -912,7 +1187,7 @@ class QueryAgent:
                         "navigation_sections": navigation_sections,
                         "used_section_scope": used_section_scope,
                     }
-                provenance = self._provenance_from_hits(doc_id, hits)
+                provenance = self._provenance_from_hits(doc_id, answer_hits or hits)
                 return {
                     "answer": answer_text,
                     "provenance_chain": [p.model_dump(mode="json") for p in provenance],

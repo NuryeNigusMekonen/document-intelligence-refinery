@@ -1,64 +1,310 @@
-{
-  "question": "When is ANNUAL ORDINARY GENERAL MEETING OF SHAREHOLDERS?",
-  "answer": "30 June 2023",
-  "provenance_chain": [
-    {
-      "doc_name": "Annual_Report_JUNE-2023.pdf",
-      "ref_type": "pdf_bbox",
-      "page_number": 16,
-      "bbox": [
-        0.0,
-        320.0,
-        581.1019897460938,
-        348.0
-      ],
-      "section_path": [
-        "1.4 Billion;"
-      ],
-      "line_range": null,
-      "sheet_name": null,
-      "cell_range": null,
-      "content_hash": "dae5f8f6bc4e5ed191fff80001ae2337903c19026f94b3aeff82ecd22ca0b82e"
-    },
-    {
-      "doc_name": "Annual_Report_JUNE-2023.pdf",
-      "ref_type": "pdf_bbox",
-      "page_number": 21,
-      "bbox": [
-        0.0,
-        416.0,
-        581.1019897460938,
-        444.0
-      ],
-      "section_path": [
-        "1.4 Billion;"
-      ],
-      "line_range": null,
-      "sheet_name": null,
-      "cell_range": null,
-      "content_hash": "860abe227b35c149abe458706f2f850bf8dff6795fa7ea52eb5c5a0422d0d8c0"
-    },
-    {
-      "doc_name": "Annual_Report_JUNE-2023.pdf",
-      "ref_type": "pdf_bbox",
-      "page_number": 60,
-      "bbox": [
-        0.0,
-        128.0,
-        581.1019897460938,
-        156.0
-      ],
-      "section_path": [
-        "1.4 Billion;"
-      ],
-      "line_range": null,
-      "sheet_name": null,
-      "cell_range": null,
-      "content_hash": "ac6d92691c80f7b581d494b3325fae59fd1f4341be0f4f77cfc1c8aea2dcacfe"
-    }
-  ],
-  "confidence": 0.72,
-  "tool_trace": [
-    "semantic_search"
-  ]
-}
+[
+  {
+    "question": "What is the depreciation expense in Gen. Ins for 2018 under operating and other expenses?",
+    "answer": "Value from table: row 'Depreciation 2 ,147,526 56,609 2,204,136 1,923,146', column 'Gen.Ins': 2 ,147,526",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 84,
+        "bbox": [
+          42.708656080000004,
+          161.67580956000006,
+          487.7381130185001,
+          253.38212754947372
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "8739492b9c38f197045304805bff46ddf9793e971ef06267125a567a343b91ca"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What are the administrative and general expenses in Gen. Ins for 2018 under operating and other expenses?",
+    "answer": "Value from table: row 'Administrative and general 11,728,553 278,524 12,007,077 4,493,113', column 'Gen.Ins': 11,728,553",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 84,
+        "bbox": [
+          42.708656080000004,
+          161.67580956000006,
+          487.7381130185001,
+          253.38212754947372
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "8739492b9c38f197045304805bff46ddf9793e971ef06267125a567a343b91ca"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is the total operating and other expenses in Gen. Ins for 2018?",
+    "answer": "Value from table: row 'Total expenses 21,602,387 462,528 22,064,915 11,383,482', column 'Gen.Ins': 21,602,387",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 84,
+        "bbox": [
+          42.708656080000004,
+          161.67580956000006,
+          487.7381130185001,
+          253.38212754947372
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "8739492b9c38f197045304805bff46ddf9793e971ef06267125a567a343b91ca"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is Net Claims Incurred in Gen.Ins for 2018?",
+    "answer": "Value from table: row 'Net Claims Incurred 3 25,453,878 9,407,650 334,861,529 184,370,954', column 'Gen.Ins': 3 25,453,878",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is Net Claims Incurred in Long Term Ins for 2018?",
+    "answer": "Value from table: row 'Net Claims Incurred 3 25,453,878 9,407,650 334,861,529 184,370,954', column 'Long Term Ins': 9,407,650",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is Total claims incurred in Long Term Ins for 2018?",
+    "answer": "Value from table: row 'Net Claims Incurred 3 25,453,878 9,407,650 334,861,529 184,370,954', column 'Long Term Ins': 9,407,650",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is Funeral Expense Insurance claims incurred in Long Term Ins for 2018?",
+    "answer": "Value from table: row 'Funeral Expense Insurance - 9,517 9,517 500', column 'Long Term Ins': 9,517",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is Motor incurred in Gen.Ins for 2018?",
+    "answer": "Value from table: row 'Motor 2 14,514,963 - 2 14,514,963 122,554,547', column 'Gen.Ins': 2 14,514,963",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "Which Long Term Ins class has the highest claims incurred in 2018?",
+    "answer": "Value from table: row 'Net Claims Incurred 3 25,453,878 9,407,650 334,861,529 184,370,954', column 'Long Term Ins': 9,407,650",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 82,
+        "bbox": [
+          42.72708256000001,
+          217.67587949600008,
+          531.1511623600001,
+          490.4531432411158
+        ],
+        "section_path": [
+          "Salary increase rate"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "a6228b090ec942ae98e9a64f4407e7816d25c8a1f9fc11de147b737382999015"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "What is the total cost of motor vehicles on 30 June 2018?",
+    "answer": "Value from table row 'Motor Vehicles 11,298,636 3,044,870 1 4,343,506 1 1,298,636': 11,298,636",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 76,
+        "bbox": [
+          42.714019564000004,
+          161.84853624480007,
+          492.2103476867333,
+          394.47142685330004
+        ],
+        "section_path": [
+          "Closing rate USD 1"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "fe6d470d1b028fcf82a072adb5d94416da5dc9099a491a1a92773aa1132adc9c"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  },
+  {
+    "question": "How much was added to motor vehicles during the year?",
+    "answer": "Value from table row 'Motor Vehicles 11,298,636 3,044,870 1 4,343,506 1 1,298,636': 11,298,636",
+    "provenance_chain": [
+      {
+        "doc_name": "Annual_Report_JUNE-2018.pdf",
+        "ref_type": "pdf_bbox",
+        "page_number": 76,
+        "bbox": [
+          42.714019564000004,
+          161.84853624480007,
+          492.2103476867333,
+          394.47142685330004
+        ],
+        "section_path": [
+          "Closing rate USD 1"
+        ],
+        "line_range": null,
+        "sheet_name": null,
+        "cell_range": null,
+        "content_hash": "fe6d470d1b028fcf82a072adb5d94416da5dc9099a491a1a92773aa1132adc9c"
+      }
+    ],
+    "confidence": 0.72,
+    "tool_trace": [
+      "semantic_search"
+    ]
+  }
+]
